@@ -2,6 +2,8 @@ use core::fmt::Debug;
 use core::hash::Hash;
 use std::error::Error;
 
+use im::HashSet;
+
 pub trait GraphTraits = Clone + PartialEq + Debug + Eq + Hash + Default + 'static;
 // #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 
@@ -43,7 +45,7 @@ pub struct EdgeDescriptor<E: GraphTraits> {
     pub edge_type: E,
     pub host: Uid,
     pub target: Uid,
-    pub render_responsible: bool,
+    pub render_info: Option<EdgeDir>,
 }
 
 impl<E: GraphTraits> EdgeDescriptor<E> {
@@ -51,7 +53,7 @@ impl<E: GraphTraits> EdgeDescriptor<E> {
         host_node: Uid,
         edge_type: E,
         other_node: Uid,
-        render_responsible: bool,
+        render_info: Option<EdgeDir>,
         direction: EdgeDir,
     ) -> Self {
         Self {
@@ -59,18 +61,22 @@ impl<E: GraphTraits> EdgeDescriptor<E> {
             dir: direction,
             edge_type,
             target: other_node,
-            render_responsible,
+            render_info,
         }
     }
 
-    pub fn invert_drop_render(&self) -> Self {
+    pub fn invert(&self) -> Self {
         let prev_host_node = self.host;
         Self {
             edge_type: self.edge_type.clone(),
             host: self.target,
             target: prev_host_node,
             dir: self.dir.invert(),
-            render_responsible: false,
+            render_info: if let Some(render_info) = self.render_info.clone() {
+                Some(render_info.invert())
+            } else {
+                None
+            },
         }
     }
 }
@@ -92,27 +98,27 @@ impl EdgeDir {
 
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]
 pub struct EdgeFinder<E: GraphTraits> {
-    pub edge_type: Option<E>,
+    pub edge_type: Option<HashSet<E>>,
     pub dir: Option<EdgeDir>,
-    pub host: Option<Uid>,
-    pub target: Option<Uid>,
-    pub render_responsible: Option<bool>,
+    pub host: Option<HashSet<Uid>>,
+    pub target: Option<HashSet<Uid>>,
+    pub render_info: Option<Option<EdgeDir>>,
     pub match_all: Option<bool>,
 }
 
-impl<E: GraphTraits> EdgeFinder<E> {
+impl<'a, E: GraphTraits> EdgeFinder<E> {
     pub fn new() -> Self {
         Self {
             edge_type: None,
             dir: None,
             host: None,
             target: None,
-            render_responsible: None,
+            render_info: None,
             match_all: None,
         }
     }
 
-    pub fn edge_type(&self, edge_type: E) -> Self {
+    pub fn edge_type(&self, edge_type: HashSet<E>) -> Self {
         Self {
             edge_type: Some(edge_type),
             ..self.clone()
@@ -126,23 +132,32 @@ impl<E: GraphTraits> EdgeFinder<E> {
         }
     }
 
-    pub fn host_node(&self, host_node: Uid) -> Self {
+    pub fn host(&self, host_node: HashSet<Uid>) -> Self {
         Self {
             host: Some(host_node),
             ..self.clone()
         }
     }
 
-    pub fn other_node(&self, other_node: Uid) -> Self {
+    pub fn target(&self, target_node: HashSet<Uid>) -> Self {
         Self {
-            target: Some(other_node),
+            target: Some(target_node),
             ..self.clone()
         }
     }
 
-    pub fn render_responsible(&self, is_render: bool) -> Self {
+    // If completely unset, it will match any render info
+    // If set as None, it will match only edges with "None" render info
+    // If set as Some(EdgeDir), it will match only edges with that render info
+    pub fn render_info(&self, is_render: Option<EdgeDir>) -> Self {
         Self {
-            render_responsible: Some(is_render),
+            render_info: Some(is_render),
+            ..self.clone()
+        }
+    }
+    pub fn match_all(&self) -> Self {
+        Self {
+            match_all: Some(true),
             ..self.clone()
         }
     }
@@ -151,28 +166,28 @@ impl<E: GraphTraits> EdgeFinder<E> {
         let edge_type_matches = self
             .edge_type
             .as_ref()
-            .map(|et| et == &edge.edge_type)
+            .map(|et| et.contains(&edge.edge_type))
             .unwrap_or(true);
         let direction_matches = self.dir.as_ref().map(|d| d == &edge.dir).unwrap_or(true);
         let host_node_matches = self
             .host
             .as_ref()
-            .map(|hn| hn == &edge.host)
+            .map(|hn| hn.contains(&edge.host))
             .unwrap_or(true);
         let other_node_matches = self
             .target
             .as_ref()
-            .map(|on| on == &edge.target)
+            .map(|on| on.contains(&edge.target))
             .unwrap_or(true);
-        let render_responsible_matches = self
-            .render_responsible
+        let render_info_matches = self
+            .render_info
             .as_ref()
-            .map(|ir| ir == &edge.render_responsible)
+            .map(|ir| ir == &edge.render_info)
             .unwrap_or(true);
         edge_type_matches
             && direction_matches
             && host_node_matches
             && other_node_matches
-            && render_responsible_matches
+            && render_info_matches
     }
 }

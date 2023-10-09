@@ -34,7 +34,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
             }
 
             if edge_finder.edge_type.as_ref().is_some()
-                && edge_finder.edge_type.as_ref().unwrap() != edge_type
+                && !edge_finder.edge_type.as_ref().unwrap().contains(&edge_type)
             {
                 continue;
             }
@@ -53,14 +53,18 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
                     panic!("Edge direction does not match");
                 }
 
-                if edge_finder.host.is_some() && edge_finder.host.unwrap() != edge.host {
+                if edge_finder.host.is_some()
+                    && !edge_finder.host.as_ref().unwrap().contains(&edge.host)
+                {
                     continue;
                 }
-                if edge_finder.target.is_some() && edge_finder.target.unwrap() != edge.target {
+                if edge_finder.target.is_some()
+                    && !edge_finder.target.as_ref().unwrap().contains(&edge.target)
+                {
                     continue;
                 }
-                if edge_finder.render_responsible.is_some()
-                    && edge_finder.render_responsible.unwrap() != edge.render_responsible
+                if edge_finder.render_info.is_some()
+                    && edge_finder.render_info.as_ref().unwrap() != &edge.render_info
                 {
                     continue;
                 }
@@ -74,7 +78,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
         &self,
         edge_finder: &EdgeFinder<E>,
     ) -> Option<HashSet<EdgeDescriptor<E>>> {
-        if edge_finder.host != Some(self.id) {
+        if edge_finder.host.is_some() && !edge_finder.host.as_ref().unwrap().contains(&self.id) {
             return None;
         }
 
@@ -87,7 +91,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
         if search_incoming {
             found_edges = found_edges.union(ReadReactiveNode::<T, E>::search_map_for_edge(
                 edge_finder,
-                &self.incoming_edges.get(),
+                &self.incoming_edges.get_untracked(),
             ));
         }
         if !found_edges.is_empty() && edge_finder.match_all.is_none()
@@ -99,7 +103,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
         if search_outgoing {
             found_edges = found_edges.union(ReadReactiveNode::<T, E>::search_map_for_edge(
                 edge_finder,
-                &self.outgoing_edges.get(),
+                &self.outgoing_edges.get_untracked(),
             ));
         }
 

@@ -19,12 +19,12 @@ use crate::{
 use im::Vector;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Graph<T: GraphTraits, E: GraphTraits> {
+pub struct ViewGraph<T: GraphTraits, E: GraphTraits> {
     pub nodes: HashMap<Uid, (Rc<ReadReactiveNode<T, E>>, RefCell<WriteReactiveNode<T, E>>)>,
     pub label_map: HashMap<String, Vector<Uid>>,
 }
 
-impl<T: GraphTraits, E: GraphTraits> Graph<T, E> {
+impl<T: GraphTraits, E: GraphTraits> ViewGraph<T, E> {
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),

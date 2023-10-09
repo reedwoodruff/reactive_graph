@@ -1,7 +1,7 @@
 use im::HashSet;
 use uuid::Uuid;
 
-use crate::{EdgeDescriptor, GraphError, GraphTraits, Uid};
+use crate::{EdgeDescriptor, EdgeDir, EdgeFinder, GraphError, GraphTraits, Uid};
 
 pub type TempId = Uid;
 
@@ -25,29 +25,75 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
         }
     }
 
-    pub fn merge(&mut self, other: Self) -> Result<(), GraphError> {
+    pub fn merge(&self, other: Self) -> Result<Self, GraphError> {
         if self.id != other.id {
-            return Err(GraphError::Blueprint(
-                format!(
-                    "cannot merge nodes with different ids\nID1: {:?}\nID2: {:?}",
-                    self.id, other.id
-                ),
-            ));
+            return Err(GraphError::Blueprint(format!(
+                "cannot merge nodes with different ids\nID1: {:?}\nID2: {:?}",
+                self.id, other.id
+            )));
         }
-        if self.temp_id.is_none() {
-            self.temp_id = other.temp_id;
-        }
-        if self.data == T::default() {
-            self.data = other.data;
-        }
-        self.add_labels.extend(other.add_labels);
-        self.add_edges.extend(other.add_edges);
-
-        Ok(())
+        Ok(Self {
+            id: self.id,
+            temp_id: if self.temp_id.is_none() {
+                other.temp_id
+            } else {
+                self.temp_id
+            },
+            data: if self.data == T::default() {
+                other.data
+            } else {
+                self.data.clone()
+            },
+            add_labels: self.add_labels.clone().union(other.add_labels),
+            add_edges: self.add_edges.clone().union(other.add_edges),
+        })
     }
 
-    pub fn set_id(mut self, id: Uid) -> Self {
-        self.id = id;
-        self
+    pub fn set_id(&self, id: Uid) -> Self {
+        Self { id, ..self.clone() }
+    }
+
+    pub fn find_edges(&self, edge_finder: EdgeFinder<E>) -> HashSet<EdgeDescriptor<E>> {
+        let mut edges = HashSet::new();
+        for edge in self.add_edges.iter() {
+            if (edge_finder.match_all.is_none()
+                || (edge_finder.match_all.is_some() && !edge_finder.match_all.unwrap()))
+                && !edges.is_empty()
+            {
+                break;
+            }
+
+            if edge_finder.matches(edge) {
+                edges.insert(edge.clone());
+            }
+        }
+        edges
+    }
+
+    pub fn update_edge_render_info(
+        &self,
+        edge: &EdgeDescriptor<E>,
+        new_render_info: Option<EdgeDir>,
+    ) -> Self {
+        let mut new_edges = self.add_edges.clone();
+        new_edges.remove(edge);
+        new_edges.insert(EdgeDescriptor {
+            render_info: new_render_info,
+            ..edge.clone()
+        });
+
+        Self {
+            add_edges: new_edges,
+            ..self.clone()
+        }
+    }
+
+    pub fn get_render_edge(&self) -> Option<EdgeDescriptor<E>> {
+        let render_edge = self.find_edges(EdgeFinder::new().render_info(Some(EdgeDir::Recv)));
+        if render_edge.is_empty() {
+            None
+        } else {
+            Some(render_edge.iter().next().unwrap().clone())
+        }
     }
 }
