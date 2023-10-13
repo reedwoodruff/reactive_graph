@@ -1,7 +1,7 @@
 use im::HashSet;
-use leptos::error::Error;
 
-use crate::{EdgeDescriptor, EdgeDir, GraphError, GraphTraits, Uid};
+
+use crate::prelude::*;
 
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]
 pub struct UpdateNode<T: GraphTraits, E: GraphTraits> {
@@ -59,16 +59,6 @@ impl<T: GraphTraits, E: GraphTraits> UpdateNode<T, E> {
             } else {
                 self.remove_labels.clone()
             },
-            add_edges: if let Some(other_edges) = other.add_edges {
-                Some(
-                    self.add_edges
-                        .clone()
-                        .unwrap_or_default()
-                        .union(other_edges),
-                )
-            } else {
-                self.add_edges.clone()
-            },
             remove_edges: if let Some(other_edges) = other.remove_edges {
                 Some(
                     self.remove_edges
@@ -79,6 +69,16 @@ impl<T: GraphTraits, E: GraphTraits> UpdateNode<T, E> {
             } else {
                 self.remove_edges.clone()
             },
+            add_edges: if let Some(other_edges) = other.add_edges {
+                Some(
+                    self.add_edges
+                        .clone()
+                        .unwrap_or_default()
+                        .union(other_edges),
+                )
+            } else {
+                self.add_edges.clone()
+            },
         })
     }
 
@@ -86,23 +86,28 @@ impl<T: GraphTraits, E: GraphTraits> UpdateNode<T, E> {
         &self,
         edge: &EdgeDescriptor<E>,
         new_render_info: Option<EdgeDir>,
-    ) -> Result<Self, GraphError> {
+    ) -> Self {
         let new_edges = self.add_edges.clone();
+        let mut remove_edges = self.remove_edges.clone();
+
+        // If the edge in question is not in the new edges, then it must be an existing edge
+        // As such we need to delete the existing edge in order to create the new edge with the specified render information
         if new_edges.is_none() {
-            return Err(GraphError::Blueprint(
-                "cannot update edge render info on node with no edges".to_string(),
-            ));
+            let mut new_remove_edges = remove_edges.unwrap_or_default();
+            new_remove_edges.insert(edge.clone());
+            remove_edges = Some(new_remove_edges);
         }
-        let mut new_edges = new_edges.unwrap();
+        let mut new_edges = new_edges.unwrap_or_default();
 
         new_edges.remove(edge);
         new_edges.insert(EdgeDescriptor {
             render_info: new_render_info,
             ..edge.clone()
         });
-        Ok(Self {
+        Self {
             add_edges: Some(new_edges),
+            remove_edges,
             ..self.clone()
-        })
+        }
     }
 }

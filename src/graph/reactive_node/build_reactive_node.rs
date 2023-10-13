@@ -1,10 +1,11 @@
 use im::hashmap::HashMap;
 
 use im::{HashSet, Vector};
-use leptos::create_signal;
+// use leptos_reactive::{create_signal, Signal};
+use leptos::*;
 
 use crate::blueprint::new_node::NewNode;
-use crate::{EdgeDescriptor, EdgeDir, GraphTraits, Uid};
+use crate::prelude::*;
 
 use super::read_reactive_node::ReadReactiveNode;
 use super::write_reactive_node::WriteReactiveNode;
@@ -13,9 +14,15 @@ use super::write_reactive_node::WriteReactiveNode;
 pub struct BuildReactiveNode<T: GraphTraits, E: GraphTraits> {
     id: Option<Uid>,
     data: Option<T>,
-    labels: Option<HashSet<String>>,
-    incoming_edges: Option<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
-    outgoing_edges: Option<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
+    labels: Option<Vector<String>>,
+    incoming_edges: Option<HashMap<E, Vector<EdgeDescriptor<E>>>>,
+    outgoing_edges: Option<HashMap<E, Vector<EdgeDescriptor<E>>>>,
+}
+
+impl<T: GraphTraits, E: GraphTraits> Default for BuildReactiveNode<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: GraphTraits, E: GraphTraits> BuildReactiveNode<T, E> {
@@ -95,7 +102,9 @@ impl<T: GraphTraits, E: GraphTraits> BuildReactiveNode<T, E> {
                 EdgeDir::Recv => &mut new_incoming_edges,
             };
             let edge_list = map_to_edit.entry(edge.edge_type.clone()).or_default();
-            edge_list.insert(edge.clone());
+            if !edge_list.contains(edge) {
+                edge_list.push_back(edge.clone());
+            }
         }
 
         Self {
@@ -114,12 +123,18 @@ impl<T: GraphTraits, E: GraphTraits> BuildReactiveNode<T, E> {
 
     // Constructs the final Node object
     pub fn build(&self) -> (ReadReactiveNode<T, E>, WriteReactiveNode<T, E>) {
-        let (read_data, write_data) = create_signal(self.data.clone().expect("Data must be set"));
-        let (read_labels, write_labels) = create_signal(self.labels.clone().unwrap_or_default());
+        let (read_data, write_data) =
+            create_signal::<T>(self.data.clone().expect("Data must be set"));
+        let (read_labels, write_labels) =
+            create_signal::<Vector<String>>(self.labels.clone().unwrap_or_default());
         let (read_incoming_edges, write_incoming_edges) =
-            create_signal(self.incoming_edges.clone().unwrap_or_default());
+            create_signal::<HashMap<E, Vector<EdgeDescriptor<E>>>>(
+                self.incoming_edges.clone().unwrap_or_default(),
+            );
         let (read_outgoing_edges, write_outgoing_edges) =
-            create_signal(self.outgoing_edges.clone().unwrap_or_default());
+            create_signal::<HashMap<E, Vector<EdgeDescriptor<E>>>>(
+                self.outgoing_edges.clone().unwrap_or_default(),
+            );
 
         (
             ReadReactiveNode {

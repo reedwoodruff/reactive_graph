@@ -1,28 +1,32 @@
-use im::HashSet;
+use im::{HashSet, Vector};
+// use leptos_reactive::{ReadSignal, SignalGetUntracked};
+use leptos::*;
 
-use crate::{EdgeDir, EdgeFinder};
+use crate::prelude::*;
 
 use super::super::{
     common::{EdgeDescriptor, Uid},
     GraphTraits,
 };
 use im::hashmap::HashMap;
-use leptos::*;
 
 #[derive(Clone, PartialEq, Debug, Eq)]
 pub struct ReadReactiveNode<T: GraphTraits, E: GraphTraits> {
     pub id: Uid,
     pub data: ReadSignal<T>,
-    pub labels: ReadSignal<HashSet<String>>,
-    pub incoming_edges: ReadSignal<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
-    pub outgoing_edges: ReadSignal<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
+    pub labels: ReadSignal<Vector<String>>,
+    pub incoming_edges: ReadSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
+    pub outgoing_edges: ReadSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
 }
 
 impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
-    fn search_map_for_edge(
+    fn search_map_for_edge<I>(
         edge_finder: &EdgeFinder<E>,
-        map: &HashMap<E, HashSet<EdgeDescriptor<E>>>,
-    ) -> HashSet<EdgeDescriptor<E>> {
+        map: &HashMap<E, I>,
+    ) -> HashSet<EdgeDescriptor<E>>
+    where
+        I: IntoIterator<Item = EdgeDescriptor<E>> + Clone,
+    {
         let mut found_edges = HashSet::new();
         for (edge_type, edges) in map.iter() {
             // Return the array of one if the edgefinder is not set to match all
@@ -34,11 +38,11 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
             }
 
             if edge_finder.edge_type.as_ref().is_some()
-                && !edge_finder.edge_type.as_ref().unwrap().contains(&edge_type)
+                && !edge_finder.edge_type.as_ref().unwrap().contains(edge_type)
             {
                 continue;
             }
-            for edge in edges.iter() {
+            for edge in edges.clone().into_iter() {
                 // Return the array of one if the edgefinder is not set to match all
                 if !found_edges.is_empty()
                     && (edge_finder.match_all.is_none()
@@ -89,7 +93,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
             || edge_finder.dir.as_ref().unwrap() == &EdgeDir::Emit;
 
         if search_incoming {
-            found_edges = found_edges.union(ReadReactiveNode::<T, E>::search_map_for_edge(
+            found_edges.extend(ReadReactiveNode::<T, E>::search_map_for_edge(
                 edge_finder,
                 &self.incoming_edges.get_untracked(),
             ));
@@ -101,7 +105,7 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
         }
 
         if search_outgoing {
-            found_edges = found_edges.union(ReadReactiveNode::<T, E>::search_map_for_edge(
+            found_edges.extend(ReadReactiveNode::<T, E>::search_map_for_edge(
                 edge_finder,
                 &self.outgoing_edges.get_untracked(),
             ));
@@ -112,5 +116,25 @@ impl<T: GraphTraits, E: GraphTraits> ReadReactiveNode<T, E> {
         }
 
         Some(found_edges)
+    }
+
+    pub fn convert_all_edges_to_hashset(&self) -> HashSet<EdgeDescriptor<E>> {
+        self.outgoing_edges
+            .get_untracked()
+            .iter()
+            .fold(
+                HashSet::new(),
+                |mut acc: HashSet<EdgeDescriptor<E>>, (_edge_type, edges)| {
+                    acc.extend(edges.clone());
+                    acc
+                },
+            )
+            .union(self.outgoing_edges.get_untracked().iter().fold(
+                HashSet::new(),
+                |mut acc: HashSet<EdgeDescriptor<E>>, (_edge_type, edges)| {
+                    acc.extend(edges.clone());
+                    acc
+                },
+            ))
     }
 }

@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 im = "15.1.0"
 leptos = { version = "0.5.0", features = ["csr", "nightly"] }
+# leptos_reactive = { version = "0.5.1", features = ["nightly"] }
 
 [dependencies.uuid]
 version = "1.4.1"
@@ -17,11 +18,11 @@ features = [
     "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
 ]
 
-[profile.release]
-opt-level = 'z'
-lto = true
-codegen-units = 1
-panic = "abort"
+# [profile.release]
+# opt-level = 'z'
+# lto = true
+# codegen-units = 1
+# panic = "abort"
 
-[package.metadata.leptos]
-lib-profile-release = "wasm-release"
+# [package.metadata.leptos]
+# lib-profile-release = "wasm-release"

@@ -2,20 +2,9 @@ use core::fmt::Debug;
 use core::hash::Hash;
 use std::error::Error;
 
-use im::HashSet;
+use im::{hashset, HashSet};
 
 pub trait GraphTraits = Clone + PartialEq + Debug + Eq + Hash + Default + 'static;
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-
-// pub type GraphError = Box<dyn Error>;
-
-// pub struct GraphErrorStruct;
-// impl Display for GraphErrorStruct {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "GraphError")
-//     }
-// }
-// impl Error for GraphErrorStruct {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GraphError {
@@ -66,17 +55,12 @@ impl<E: GraphTraits> EdgeDescriptor<E> {
     }
 
     pub fn invert(&self) -> Self {
-        let prev_host_node = self.host;
         Self {
             edge_type: self.edge_type.clone(),
             host: self.target,
-            target: prev_host_node,
+            target: self.host,
             dir: self.dir.invert(),
-            render_info: if let Some(render_info) = self.render_info.clone() {
-                Some(render_info.invert())
-            } else {
-                None
-            },
+            render_info: self.render_info.clone().map(|render_info| render_info.invert()),
         }
     }
 }
@@ -106,6 +90,12 @@ pub struct EdgeFinder<E: GraphTraits> {
     pub match_all: Option<bool>,
 }
 
+impl<'a, E: GraphTraits> Default for EdgeFinder<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a, E: GraphTraits> EdgeFinder<E> {
     pub fn new() -> Self {
         Self {
@@ -118,30 +108,58 @@ impl<'a, E: GraphTraits> EdgeFinder<E> {
         }
     }
 
-    pub fn edge_type(&self, edge_type: HashSet<E>) -> Self {
+    pub fn edge_type(&self, edge_type: E) -> Self {
         Self {
-            edge_type: Some(edge_type),
+            edge_type: Some(hashset![edge_type]),
+            ..self.clone()
+        }
+    }
+    pub fn edge_types<I>(&self, edge_types: I) -> Self
+    where
+        I: IntoIterator<Item = E>,
+    {
+        Self {
+            edge_type: Some(edge_types.into_iter().collect::<HashSet<E>>()),
             ..self.clone()
         }
     }
 
-    pub fn direction(&self, direction: EdgeDir) -> Self {
+    pub fn dir(&self, direction: EdgeDir) -> Self {
         Self {
             dir: Some(direction),
             ..self.clone()
         }
     }
 
-    pub fn host(&self, host_node: HashSet<Uid>) -> Self {
+    pub fn host(&self, host_node: Uid) -> Self {
         Self {
-            host: Some(host_node),
+            host: Some(hashset![host_node]),
+            ..self.clone()
+        }
+    }
+    pub fn hosts<I>(&self, host_nodes: I) -> Self
+    where
+        I: IntoIterator<Item = Uid>,
+    {
+        Self {
+            host: Some(host_nodes.into_iter().collect::<HashSet<Uid>>()),
             ..self.clone()
         }
     }
 
-    pub fn target(&self, target_node: HashSet<Uid>) -> Self {
+    pub fn target(&self, target_node: Uid) -> Self {
         Self {
-            target: Some(target_node),
+            target: Some(hashset![target_node]),
+            ..self.clone()
+        }
+    }
+
+    pub fn targets<I>(&self, target_nodes: I) -> Self
+    where
+        I: IntoIterator<Item = Uid>,
+    {
+        Self {
+            target: Some(target_nodes.into_iter().collect::<HashSet<Uid>>()),
             ..self.clone()
         }
     }
@@ -159,6 +177,17 @@ impl<'a, E: GraphTraits> EdgeFinder<E> {
         Self {
             match_all: Some(true),
             ..self.clone()
+        }
+    }
+
+    pub fn invert(&self) -> Self {
+        Self {
+            edge_type: self.edge_type.clone(),
+            dir: self.dir.clone().map(|d| d.invert()),
+            host: self.target.clone(),
+            target: self.host.clone(),
+            render_info: self.render_info.clone().map(|ir| ir.map(|ir| ir.invert())),
+            match_all: self.match_all,
         }
     }
 

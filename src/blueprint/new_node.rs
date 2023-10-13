@@ -1,7 +1,7 @@
 use im::HashSet;
 use uuid::Uuid;
 
-use crate::{EdgeDescriptor, EdgeDir, EdgeFinder, GraphError, GraphTraits, Uid};
+use crate::prelude::*;
 
 pub type TempId = Uid;
 
@@ -12,6 +12,12 @@ pub struct NewNode<T: GraphTraits, E: GraphTraits> {
     pub data: T,
     pub add_labels: HashSet<String>,
     pub add_edges: HashSet<EdgeDescriptor<E>>,
+}
+
+impl<T: GraphTraits, E: GraphTraits> Default for NewNode<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
@@ -25,7 +31,7 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
         }
     }
 
-    pub fn merge(&self, other: Self) -> Result<Self, GraphError> {
+    pub fn merge_additive(&self, other: Self) -> Result<Self, GraphError> {
         if self.id != other.id {
             return Err(GraphError::Blueprint(format!(
                 "cannot merge nodes with different ids\nID1: {:?}\nID2: {:?}",
@@ -53,7 +59,7 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
         Self { id, ..self.clone() }
     }
 
-    pub fn find_edges(&self, edge_finder: EdgeFinder<E>) -> HashSet<EdgeDescriptor<E>> {
+    pub fn find_edges(&self, edge_finder: &EdgeFinder<E>) -> HashSet<EdgeDescriptor<E>> {
         let mut edges = HashSet::new();
         for edge in self.add_edges.iter() {
             if (edge_finder.match_all.is_none()
@@ -89,7 +95,7 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
     }
 
     pub fn get_render_edge(&self) -> Option<EdgeDescriptor<E>> {
-        let render_edge = self.find_edges(EdgeFinder::new().render_info(Some(EdgeDir::Recv)));
+        let render_edge = self.find_edges(&EdgeFinder::new().render_info(Some(EdgeDir::Recv)));
         if render_edge.is_empty() {
             None
         } else {

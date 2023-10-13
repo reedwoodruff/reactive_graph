@@ -1,25 +1,28 @@
-use im::HashSet;
+use im::{HashSet, Vector};
+// use leptos_reactive::{SignalSet, SignalUpdate, WriteSignal};
+use leptos::*;
 
-use crate::{blueprint::update_node::UpdateNode, EdgeDir};
+use crate::blueprint::update_node::UpdateNode;
+use crate::prelude::*;
 
 use super::super::{
     common::{EdgeDescriptor, Uid},
     GraphTraits,
 };
 use im::hashmap::HashMap;
-use leptos::*;
 
 #[derive(Clone, PartialEq, Debug, Eq)]
 pub struct WriteReactiveNode<T: GraphTraits, E: GraphTraits> {
     pub id: Uid,
     pub data: WriteSignal<T>,
-    pub labels: WriteSignal<HashSet<String>>,
-    pub incoming_edges: WriteSignal<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
-    pub outgoing_edges: WriteSignal<HashMap<E, HashSet<EdgeDescriptor<E>>>>,
+    pub labels: WriteSignal<Vector<String>>,
+    pub incoming_edges: WriteSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
+    pub outgoing_edges: WriteSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
 }
 
 impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
     pub fn update(&mut self, node: UpdateNode<T, E>) {
+        // log!("Updating signal, node: {:?}", node.id);
         if let Some(data) = node.replacement_data {
             self.data.set(data);
         }
@@ -29,19 +32,6 @@ impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
         if let Some(labels) = node.remove_labels {
             self.remove_labels(labels);
         }
-        if let Some(edges) = node.add_edges {
-            let mut incoming_edges = edges.clone();
-            incoming_edges.retain(|edge| edge.dir == EdgeDir::Recv);
-            let mut outgoing_edges = edges.clone();
-            outgoing_edges.retain(|edge| edge.dir == EdgeDir::Emit);
-            if !incoming_edges.is_empty() {
-                self.add_edges(incoming_edges, EdgeDir::Recv);
-            }
-            if !outgoing_edges.is_empty() {
-                self.add_edges(outgoing_edges, EdgeDir::Emit);
-            }
-        }
-
         if let Some(edges) = node.remove_edges {
             let mut incoming_edges = edges.clone();
             incoming_edges.retain(|edge| edge.dir == EdgeDir::Recv);
@@ -54,6 +44,19 @@ impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
                 self.remove_edges(outgoing_edges, EdgeDir::Emit);
             }
         }
+
+        if let Some(edges) = node.add_edges {
+            let mut incoming_edges = edges.clone();
+            incoming_edges.retain(|edge| edge.dir == EdgeDir::Recv);
+            let mut outgoing_edges = edges.clone();
+            outgoing_edges.retain(|edge| edge.dir == EdgeDir::Emit);
+            if !incoming_edges.is_empty() {
+                self.add_edges(incoming_edges, EdgeDir::Recv);
+            }
+            if !outgoing_edges.is_empty() {
+                self.add_edges(outgoing_edges, EdgeDir::Emit);
+            }
+        }
     }
 
     fn add_labels(&self, labels: HashSet<String>) {
@@ -64,9 +67,13 @@ impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
 
     fn remove_labels(&mut self, labels: HashSet<String>) {
         self.labels.update(|prev| {
-            let new_list = prev.clone().relative_complement(labels);
+            let new_labels = prev
+                .iter()
+                .filter(|&x| !labels.contains(x))
+                .cloned()
+                .collect();
             prev.clear();
-            prev.extend(new_list);
+            prev.append(new_labels);
         });
     }
 
@@ -83,7 +90,7 @@ impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
                 }
                 prev.entry(edge.edge_type.clone())
                     .or_default()
-                    .remove(&edge);
+                    .retain(|x| x != &edge);
                 if prev.get(&edge.edge_type).unwrap().is_empty() {
                     prev.remove(&edge.edge_type);
                 }
@@ -101,7 +108,7 @@ impl<T: GraphTraits, E: GraphTraits> WriteReactiveNode<T, E> {
             for edge in edges {
                 prev.entry(edge.edge_type.clone())
                     .or_default()
-                    .insert(edge.clone());
+                    .push_back(edge.clone());
             }
         });
     }

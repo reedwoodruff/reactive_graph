@@ -1,11 +1,10 @@
-use std::{borrow::BorrowMut, cell::RefCell, hash::Hash};
+use std::cell::RefCell;
 
-use im::{hashset, HashMap, HashSet};
+use im::{hashset, vector, HashMap, HashSet, Vector};
 use leptos::{logging::log, *};
 
-use crate::{
-    graph::view_graph::ViewGraph, EdgeDescriptor, EdgeDir, EdgeFinder, GraphError, GraphTraits, Uid,
-};
+use crate::graph::view_graph::ViewGraph;
+use crate::prelude::*;
 
 use super::{
     new_node::{NewNode, TempId},
@@ -16,9 +15,10 @@ use super::{
 
 pub struct AllowedRenderEdgeSpecifier<E: GraphTraits> {
     pub edge_type: E,
-    pub direction: EdgeDir,
+    pub dir: EdgeDir,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FinalizedBlueprint<T: GraphTraits, E: GraphTraits> {
     pub new_nodes: HashMap<Uid, NewNode<T, E>>,
     pub update_nodes: HashMap<Uid, UpdateNode<T, E>>,
@@ -29,14 +29,25 @@ pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits> {
     new_nodes: RefCell<HashMap<Uid, NewNode<T, E>>>,
     update_nodes: RefCell<HashMap<Uid, UpdateNode<T, E>>>,
     delete_nodes: RefCell<HashSet<Uid>>,
+    // Should be from the perspective of the renderer -- the new node should be the target
     entry_edges: RefCell<HashSet<EdgeDescriptor<E>>>,
     // Bool represents whether the node is_new
     temp_edges: RefCell<HashSet<(EdgeDescriptor<E>, bool)>>,
     remove_edge_finders: RefCell<HashSet<EdgeFinder<E>>>,
     removed_render_edges: RefCell<HashSet<EdgeDescriptor<E>>>,
+    // Stored as NewNodes to facilitate the render path finding algorithm, but these nodes are actually existent.
+    // The new edges represent all of the existing edges except for any that have been removed
+    displaced_nodes: RefCell<HashMap<Uid, NewNode<T, E>>>,
+    // Possible entry edges to the displaced nodes. Should be from the perspective of the renderer
+    displaced_entry_edges: RefCell<HashSet<EdgeDescriptor<E>>>,
     pub temp_id_map: RefCell<HashMap<TempId, Uid>>,
     errors: RefCell<Vec<GraphError>>,
-    // graph: &'a ViewGraph<T, E>,
+}
+
+impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> Default for BuildBlueprint<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
@@ -50,6 +61,8 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
             temp_id_map: RefCell::new(HashMap::new()),
             remove_edge_finders: RefCell::new(HashSet::new()),
             removed_render_edges: RefCell::new(HashSet::new()),
+            displaced_nodes: RefCell::new(HashMap::new()),
+            displaced_entry_edges: RefCell::new(HashSet::new()),
             errors: RefCell::new(Vec::new()),
         }
     }
@@ -60,18 +73,12 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
 
     fn remove_new_node(&self, id: Uid) {
         let _result = self.new_nodes.borrow_mut().remove(&id);
-        // if result.is_none() {
-        //     self.errors.borrow_mut().push(GraphError::Blueprint(format!(
-        //         "Attempted to remove new node, but it was not found in the new_node list\n ID: {:?}",
-        //         id
-        //     )));
-        // }
     }
 
     fn add_node(&self, node: NewNode<T, E>) {
         let mut new_nodes_mut = self.new_nodes.borrow_mut();
         if let Some(existing_entry) = new_nodes_mut.get_mut(&node.id) {
-            let result = existing_entry.merge(node);
+            let result = existing_entry.merge_additive(node);
             match result {
                 Err(err) => self.errors.borrow_mut().push(err),
                 Ok(merged_node) => {
@@ -93,13 +100,6 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
     }
 
     fn update_node(&self, node: UpdateNode<T, E>) {
-        // if self.graph.nodes.get(&node.id).is_none() {
-        //     self.errors.borrow_mut().push(GraphError::Blueprint(format!(
-        //         "update_node: node not found, ID: {:?}",
-        //         node.id
-        //     )));
-        // }
-
         let mut update_nodes_mut = self.update_nodes.borrow_mut();
         if let Some(existing_entry) = update_nodes_mut.get_mut(&node.id) {
             let result = existing_entry.merge(node);
@@ -114,10 +114,11 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    pub fn start_with_update_node(&'b self, node: UpdateNode<T, E>) -> BlueUpdate<'b, T, E> {
-        self.update_node(node.clone());
+    pub fn start_with_update_node(&'b self, id: Uid) -> BlueUpdate<'b, T, E> {
+        let update_node = UpdateNode::new(id);
+        self.update_node(update_node.clone());
         BlueUpdate {
-            node,
+            node: update_node,
             blueprint: self,
         }
     }
@@ -126,9 +127,87 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         self.delete_nodes.borrow_mut().insert(node_id);
     }
 
+    // Edge should be given from the perspective of the potentially displaced node
+    fn find_and_catalog_displaced_nodes(
+        &self,
+        graph: &ViewGraph<T, E>,
+        edge_to_check: EdgeDescriptor<E>,
+    ) {
+        if edge_to_check
+            .render_info
+            .clone()
+            .is_some_and(|info| info == EdgeDir::Recv)
+        {
+            let found_node = graph.nodes.get(&edge_to_check.host).unwrap().0.clone();
+            let update_node = self
+                .update_nodes
+                .borrow()
+                .as_ref()
+                .get(&found_node.id)
+                .cloned();
+            let mut all_edges_except_current_one: HashSet<EdgeDescriptor<E>> =
+                found_node.convert_all_edges_to_hashset();
+            all_edges_except_current_one.remove(&edge_to_check);
+
+            // log!("~~~ Edge_to_check: {:?}", edge_to_check.clone());
+
+            if let Some(update_node) = update_node {
+                if let Some(add_edges) = update_node.add_edges.clone() {
+                    all_edges_except_current_one = all_edges_except_current_one.union(add_edges);
+                }
+                if let Some(remove_edges) = update_node.remove_edges.clone() {
+                    all_edges_except_current_one =
+                        all_edges_except_current_one.relative_complement(remove_edges);
+                }
+            }
+
+            // Converting the existing node into a "NewNode" type in which all "add_edges" represent all remaining valid edges.
+            // The rest of the data besides the ID don't matter and won't be used.
+            let converted_node = NewNode {
+                add_edges: all_edges_except_current_one.clone(),
+                id: found_node.id,
+                ..NewNode::<T, E>::new()
+            };
+            // log!("~~~ Converted Node: {:?}", converted_node.clone());
+            self.displaced_nodes
+                .borrow_mut()
+                .insert(found_node.id, converted_node);
+
+            // Check this node's edges to see if it is rendering other nodes which will become displaced
+            for edge in all_edges_except_current_one {
+                self.find_and_catalog_displaced_nodes(graph, edge.invert());
+            }
+        }
+    }
+
     fn finalize_delete_nodes(&self, graph: &ViewGraph<T, E>) {
         for node_id in self.delete_nodes.borrow().iter() {
-            let graph_node = graph.nodes.get(&node_id);
+            // Since entry edges should represent everywhere a new node is being connected to an existing node,
+            // we should be able to check the entry edges for anywhere the a new node was referencing a deleted node, and remove those edges
+            // (This instead of looping through all new nodes searching for edges to the deleted node)
+            let found_entry_edges = self
+                .entry_edges
+                .borrow()
+                .iter()
+                .filter(|edge| edge.host == *node_id)
+                .cloned()
+                .collect::<HashSet<EdgeDescriptor<E>>>();
+
+            for found_edge in found_entry_edges {
+                self.entry_edges.borrow_mut().remove(&found_edge);
+                let mut new_nodes_mut = self.new_nodes.borrow_mut();
+                let new_node = new_nodes_mut.get_mut(&found_edge.target).unwrap();
+                let found_actual_edges =
+                    new_node.find_edges(&EdgeFinder::new().target(*node_id).match_all());
+                for found_actual_edge in found_actual_edges {
+                    new_node.add_edges.remove(&found_actual_edge);
+                }
+            }
+
+            // Remove any scheduled updates from this deleted node
+            self.update_nodes.borrow_mut().remove(node_id);
+
+            let graph_node = graph.nodes.get(node_id);
             // If any of the edges on the deleted node were rendering another node, add the edge to the deleted_render_edges
             // Remove all existing edges on the deleted node
             if let Some(graph_node) = graph_node {
@@ -136,16 +215,9 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                     |(_edge_type, edges)| {
                         edges.iter().for_each(|edge| {
                             let inverted_edge = edge.invert();
-                            if inverted_edge
-                                .render_info
-                                .clone()
-                                .is_some_and(|info| info == EdgeDir::Recv)
-                            {
-                                self.removed_render_edges
-                                    .borrow_mut()
-                                    .insert(inverted_edge.clone());
-                            }
-                            self.remove_edge(inverted_edge);
+
+                            self.remove_edge(inverted_edge.clone());
+                            self.find_and_catalog_displaced_nodes(graph, inverted_edge);
                         })
                     },
                 );
@@ -154,16 +226,8 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                         edges.iter().for_each(|edge| {
                             let inverted_edge = edge.clone().invert();
 
-                            if inverted_edge
-                                .render_info
-                                .clone()
-                                .is_some_and(|info| info == EdgeDir::Recv)
-                            {
-                                self.removed_render_edges
-                                    .borrow_mut()
-                                    .insert(inverted_edge.clone());
-                            }
-                            self.remove_edge(inverted_edge);
+                            self.remove_edge(inverted_edge.clone());
+                            self.find_and_catalog_displaced_nodes(graph, inverted_edge)
                         })
                     },
                 );
@@ -182,13 +246,16 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
             // We are manually setting the host in the BlueUpdate method.
             let graph_node = graph
                 .nodes
-                .get(&edge_finder.host.as_ref().unwrap().iter().next().unwrap())
+                .get(edge_finder.host.as_ref().unwrap().iter().next().unwrap())
                 .unwrap()
                 .0
                 .clone();
 
-            let found_edges = graph_node.search_for_edge(&edge_finder);
+            let found_edges = graph_node.search_for_edge(edge_finder);
 
+            // log!("graph_node id: {:?}", graph_node.id);
+            // log!("graph_node outgoing: {:?}", graph_node.outgoing_edges.get());
+            // log!("graph_node incoming: {:?}", graph_node.incoming_edges.get());
             if found_edges.is_none() {
                 self.errors.borrow_mut().push(GraphError::Blueprint(format!(
                     "remove_edge: edge not found\nEdge Finder: {:?}",
@@ -202,28 +269,11 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                 for found_edge in found_edges {
                     // Update the blueprint immediately with the inverse
                     let inverted_edge = found_edge.clone().invert();
-                    if inverted_edge
-                        .render_info
-                        .clone()
-                        .is_some_and(|info| info == EdgeDir::Recv)
-                    {
-                        self.removed_render_edges
-                            .borrow_mut()
-                            .insert(inverted_edge.clone());
-                    }
 
+                    self.find_and_catalog_displaced_nodes(graph, inverted_edge.clone());
                     self.remove_edge(inverted_edge);
 
-                    if found_edge
-                        .render_info
-                        .clone()
-                        .is_some_and(|info| info == EdgeDir::Recv)
-                    {
-                        self.removed_render_edges
-                            .borrow_mut()
-                            .insert(found_edge.clone());
-                    }
-
+                    self.find_and_catalog_displaced_nodes(graph, found_edge.clone());
                     self.remove_edge(found_edge);
                 }
             }
@@ -255,16 +305,26 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
     }
 
     fn remove_edge(&self, edge: EdgeDescriptor<E>) {
-        // if self.graph.nodes.get(&edge.host).is_none() {
-        //     self.errors.borrow_mut().push(GraphError::Blueprint(format!(
-        //         "remove_edge: node not found, ID: {:?}",
-        //         edge.host
-        //     )));
-        // }
+        self.entry_edges.borrow_mut().remove(&edge);
+        self.displaced_entry_edges.borrow_mut().remove(&edge);
+
+        let displaced_node = self.displaced_nodes.borrow().get(&edge.host).cloned();
+        if let Some(displaced_node) = displaced_node {
+            let mut displaced_node_mut = displaced_node.clone();
+            displaced_node_mut.add_edges.remove(&edge);
+            self.displaced_nodes
+                .borrow_mut()
+                .insert(displaced_node.id, displaced_node_mut);
+        }
+
         let mut update_nodes_mut = self.update_nodes.borrow_mut();
         let update_node = update_nodes_mut
             .entry(edge.host)
             .or_insert_with(|| UpdateNode::new(edge.host));
+
+        if let Some(add_edges) = update_node.add_edges.as_mut() {
+            add_edges.remove(&edge);
+        }
 
         if update_node.remove_edges.is_none() {
             update_node.remove_edges = Some(HashSet::new());
@@ -281,77 +341,78 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
             // The inverted edge will always be is_new because it represents a node which had a temp_id
             self.add_edge(updated_edge.invert(), true);
 
-            // Temp edges which come from existing edges are entry points
+            // Temp edges which come from existing nodes are entry points
             if !is_new {
-                self.entry_edges.borrow_mut().insert(updated_edge.invert());
+                self.add_entry_edge(updated_edge.clone());
             }
             self.add_edge(updated_edge, *is_new);
         }
     }
 
-    fn set_render_edges_for_new_nodes(
-        &self,
-        valid_edge_types: Option<HashSet<E>>,
-        entry_point_temp_id: Option<TempId>,
-    ) {
-        println!("----- Starting set render edges -----");
-        let mut starting_nodes: HashSet<NewNode<T, E>> = HashSet::new();
-        let mut is_entry_point = false;
-        println!("entry_edges: {:?}", self.entry_edges.borrow());
-
-        // TODO: ensure that none of the entry edges point to an existing node which is:
-        //  1. Being deleted explicitly
-        //  2. Being deleted implicitly (by being rendered in a branch which is irreconcilably broken by a deleted node or render edge)
-        if !self.entry_edges.borrow().is_empty() {
-            println!("entry_edges: {:?}", self.entry_edges.borrow());
-            let mut valid_entry_edges: HashSet<EdgeDescriptor<E>> =
-                self.entry_edges.borrow().clone();
-            valid_entry_edges.retain(|edge| {
-                if let Some(valid_edge_types) = &valid_edge_types {
-                    valid_edge_types.contains(&edge.edge_type)
-                } else {
-                    true
+    fn find_potential_entries_for_displaced_nodes(&self, graph: &ViewGraph<T, E>) {
+        for (id, displaced_node) in self.displaced_nodes.borrow().iter() {
+            displaced_node.add_edges.iter().for_each(|edge| {
+                if graph.nodes.get(&edge.target).is_some()
+                    && !self.delete_nodes.borrow().contains(id)
+                    && self.displaced_nodes.borrow().get(&edge.target).is_none()
+                {
+                    self.displaced_entry_edges
+                        .borrow_mut()
+                        .insert(edge.invert());
                 }
             });
+        }
+    }
 
-            for edge in valid_entry_edges.iter() {
-                let node = self.new_nodes.borrow().clone();
-                let node = node.get(&edge.host).clone().unwrap();
-                // If the potential entry node does not already have a set render edge, use this edge as the entry edge
+    fn set_render_edges(
+        &self,
+        valid_render_edge_finders: Vector<EdgeFinder<E>>,
+        entry_point_temp_id: Option<TempId>,
+        graph: &ViewGraph<T, E>,
+    ) {
+        let flipped_valid_edge_finders: Vector<EdgeFinder<E>> = valid_render_edge_finders
+            .iter()
+            .map(|finder| finder.invert())
+            .collect();
 
-                if node.get_render_edge().is_none() {
-                    let updated_new_node = node.update_edge_render_info(edge, Some(EdgeDir::Recv));
-                    self.new_nodes
-                        .borrow_mut()
-                        .insert(node.id, updated_new_node.clone());
+        let combined_entry_edges: HashSet<EdgeDescriptor<E>> = self
+            .entry_edges
+            .borrow()
+            .iter()
+            .chain(self.displaced_entry_edges.borrow().iter())
+            .filter(|&edge| {
+                valid_render_edge_finders
+                    .iter()
+                    .any(|finder| finder.matches(edge))
+            })
+            .cloned()
+            .collect();
 
-                    let updated_update_node = self
-                        .update_nodes
-                        .borrow()
-                        .get(&edge.target)
-                        .unwrap()
-                        .update_edge_render_info(&edge.invert(), Some(EdgeDir::Emit))
-                        .unwrap();
+        let mut ranked_connection_possibilities: HashMap<u64, HashSet<EdgeDescriptor<E>>> =
+            combined_entry_edges
+                .iter()
+                .map(|edge| {
+                    let order_value = flipped_valid_edge_finders
+                        .iter()
+                        .position(|finder| finder.matches(edge))
+                        .unwrap_or(usize::MAX);
 
-                    self.update_nodes
-                        .borrow_mut()
-                        .insert(edge.target, updated_update_node);
-                    starting_nodes.insert(updated_new_node);
-                    is_entry_point = true;
-                }
-                // If it already has a render_edge, then if that render_edge is to an existing node, count that existing edge as an entry edge
-                // The other alternative is that a user has manually set a render_edge to another new_node, in which case it is not an entry edge
-                else {
-                    let edge_is_entry_point =
-                        self.update_nodes.borrow().get(&edge.target).is_some();
-                    if edge_is_entry_point {
-                        starting_nodes.insert(node.clone());
-                        is_entry_point = true;
-                    }
-                }
-            }
-        } else if let Some(starting_id) = entry_point_temp_id {
-            let starting_id = self.temp_id_map.borrow().get(&starting_id).cloned();
+                    (order_value as u64, hashset!(edge.clone()))
+                })
+                .collect();
+
+        let mut combined_uncertain_render_nodes = self.new_nodes.borrow().clone();
+        combined_uncertain_render_nodes.extend(self.displaced_nodes.borrow().clone());
+
+        let mut all_connected_nodes: HashSet<Uid> = HashSet::new();
+        let mut newly_connected_nodes: HashSet<NewNode<T, E>> = HashSet::new();
+        let mut remaining_nodes = combined_uncertain_render_nodes
+            .iter()
+            .map(|(id, _node)| *id)
+            .collect::<HashSet<Uid>>();
+
+        if let Some(entry_point_temp_id) = entry_point_temp_id {
+            let starting_id = self.temp_id_map.borrow().get(&entry_point_temp_id).cloned();
             if starting_id.is_none() {
                 self.errors.borrow_mut().push(GraphError::Blueprint(format!(
                     "set_render_edges: entry_point_temp_id not found in temp_id_map\nTemp Id: {:?}",
@@ -362,8 +423,11 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
             let starting_id = starting_id.unwrap();
             println!("starting_id: {:?}", starting_id);
             // starting_nodes.insert(*self.temp_id_map.borrow().get(&starting_id).unwrap());
-            let node = self.new_nodes.borrow();
-            let node = node.get(&starting_id).unwrap();
+
+            let node = combined_uncertain_render_nodes
+                .get(&starting_id)
+                .cloned()
+                .unwrap();
             if node.get_render_edge().is_some() {
                 self.errors.borrow_mut().push(GraphError::Blueprint(format!(
                     "set_render_edges: entry_point cannot have a render edge\nNode Id: {:?}",
@@ -371,125 +435,221 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                 )));
                 return;
             }
-            starting_nodes.insert(node.clone());
-            is_entry_point = true;
-        } else {
-            println!("No valid entry edges or starting id");
-            self.errors.borrow_mut().push(GraphError::Blueprint(
-                "set_render_edges: no entry points found".to_string(),
-            ));
-            return;
-        };
-
-        if !is_entry_point {
-            self.errors.borrow_mut().push(GraphError::Blueprint(format!(
-                "No entry point was found for the specified changes",
-            )));
-            return;
+            // starting_nodes.insert(node.clone());
+            newly_connected_nodes.insert(node.clone());
+            all_connected_nodes.insert(node.id);
+            remaining_nodes.remove(&node.id);
         }
 
-        println!("starting_nodes:");
-        for node in starting_nodes.clone() {
-            println!("{:?}", node);
-        }
+        while !remaining_nodes.is_empty() {
+            for newly_connected_node in newly_connected_nodes.clone() {
+                for edge in newly_connected_node.add_edges {
+                    if all_connected_nodes.contains(&edge.target) {
+                        continue;
+                    }
+                    let order_value = valid_render_edge_finders
+                        .iter()
+                        .position(|finder| finder.matches(&edge));
 
-        let mut all_connected_nodes: HashSet<Uid> =
-            starting_nodes.iter().map(|node| node.id).collect();
-        let mut newly_connected_nodes = starting_nodes;
-        let mut remaining_nodes = self
-            .new_nodes
-            .borrow()
-            .clone()
-            .iter()
-            .map(|(id, _node)| *id)
-            .collect::<HashSet<Uid>>()
-            .difference(all_connected_nodes.clone());
+                    if let Some(order_value) = order_value {
+                        all_connected_nodes.insert(edge.target);
+                        ranked_connection_possibilities
+                            .entry(order_value as u64)
+                            .or_default()
+                            .insert(edge);
+                    }
+                }
+            }
+            newly_connected_nodes.clear();
 
-        while remaining_nodes.len() > 0 {
-            if newly_connected_nodes.is_empty() {
-                self.errors.borrow_mut().push(GraphError::Blueprint(
-                    "could not find render edges for all new nodes".to_string(),
-                ));
+            // If there are no more possible connection edges, check to see if any of the remaining nodes are new nodes
+            // If there are new nodes which can't be connected, return an error
+            // If there are only displaced nodes which can't be connected, delete them and finish the function
+            if ranked_connection_possibilities.is_empty() {
+                log!("Finished loop, remaining nodes: {:?}", remaining_nodes);
+                for remaining_node in remaining_nodes.clone() {
+                    if self.new_nodes.borrow().get(&remaining_node).is_some() {
+                        self.errors.borrow_mut().push(GraphError::Blueprint(
+                            format!(
+                                "could not find render edges for all new nodes\nNode ID: {:?}",
+                                remaining_node
+                            )
+                            .to_string(),
+                        ));
+                        return;
+                    }
+                }
+
+                for remaining_node in remaining_nodes {
+                    self.delete_nodes.borrow_mut().insert(remaining_node);
+                }
+                // Should be fine to just call this function again, even though it will do some duplicate work
+                // If it's a performance problem we can do a more narrow update
+                self.finalize_delete_nodes(graph);
+
                 return;
             }
 
-            let loop_nodes = newly_connected_nodes.clone();
-            newly_connected_nodes.clear();
+            // Get the first connection in the highest ranked connection possibilities. Remove it from the list. If it was the last item in the list, remove that rank from the map.
+            let (rank, connection_possibilities) = ranked_connection_possibilities
+                .iter()
+                .next()
+                .map(|(rank, connections)| (*rank, connections.clone()))
+                .expect("ranked_connection_possibilities should not be empty");
 
-            for node in loop_nodes {
-                let mut edge_finder = EdgeFinder::new()
-                    .target(remaining_nodes.clone())
-                    .direction(EdgeDir::Emit)
-                    .render_info(None)
-                    .match_all();
-                if let Some(valid_edge_types) = &valid_edge_types {
-                    edge_finder = edge_finder.edge_type(valid_edge_types.clone());
-                }
+            let connection = connection_possibilities
+                .iter()
+                .next()
+                .cloned()
+                .expect("connection_possibilities should not be empty");
 
-                let render_edges = node.find_edges(edge_finder);
-                for new_render_edge in render_edges {
-                    let target_node = self.new_nodes.borrow().clone();
-                    let target_node = target_node.get(&new_render_edge.target).unwrap();
+            ranked_connection_possibilities
+                .entry(rank)
+                .and_modify(|set| {
+                    set.remove(&connection);
+                });
 
-                    if let Some(existing_render_edge) = target_node.get_render_edge() {
-                        if all_connected_nodes.contains(&existing_render_edge.target) {
-                            newly_connected_nodes.insert(target_node.clone());
-                            all_connected_nodes.insert(target_node.id);
-                            remaining_nodes.remove(&target_node.id);
-                        }
-                        continue;
-                    }
-                    let updated_target_node = target_node
-                        .update_edge_render_info(&new_render_edge.invert(), Some(EdgeDir::Recv));
-
-                    let updated_host_node = self
-                        .new_nodes
-                        .borrow()
-                        .get(&node.id)
-                        .unwrap()
-                        .update_edge_render_info(&new_render_edge, Some(EdgeDir::Emit));
-
-                    self.new_nodes
-                        .borrow_mut()
-                        .insert(node.id, updated_host_node);
-                    self.new_nodes
-                        .borrow_mut()
-                        .insert(new_render_edge.target, updated_target_node.clone());
-
-                    all_connected_nodes.insert(updated_target_node.id);
-                    remaining_nodes.remove(&updated_target_node.id);
-                    newly_connected_nodes.insert(updated_target_node);
-                }
+            if ranked_connection_possibilities
+                .get(&rank)
+                .is_some_and(|list| list.is_empty())
+            {
+                ranked_connection_possibilities.remove(&rank);
             }
-        }
 
-        println!("all_connected_nodes: {:?}", all_connected_nodes);
-    }
+            let target_node = combined_uncertain_render_nodes
+                .get(&connection.target)
+                .cloned()
+                .unwrap();
 
-    fn set_render_edges(
-        &self,
-        valid_edge_types: Option<HashSet<E>>,
-        entry_point_temp_id: Option<TempId>,
-    ) {
-        if !self.new_nodes.borrow().is_empty() {
-            self.set_render_edges_for_new_nodes(valid_edge_types, entry_point_temp_id);
+            if let Some(existing_render_edge) = target_node.get_render_edge() {
+                if all_connected_nodes.contains(&existing_render_edge.target) {
+                    newly_connected_nodes.insert(target_node.clone());
+                    all_connected_nodes.insert(target_node.id);
+                    remaining_nodes.remove(&target_node.id);
+                }
+                continue;
+            }
+
+            // Handle new nodes and displaced nodes differently
+            let host_is_new = self.new_nodes.borrow().get(&connection.host).is_some();
+            let target_is_new = self.new_nodes.borrow().get(&connection.target).is_some();
+
+            //If the same edge already exists, leave it as is to avoid adding and removing the same edge
+            // This should only ever be true if both nodes are existing nodes
+            let mut contains_same_edge = false;
+            let connection_clone = connection.clone();
+            let graph_node = graph.nodes.get(&connection.host);
+            if let Some(graph_node) = graph_node {
+                contains_same_edge = graph_node
+                    .0
+                    .search_for_edge(
+                        &EdgeFinder::new()
+                            .host(connection_clone.host)
+                            .edge_type(connection_clone.edge_type.clone())
+                            .dir(connection_clone.dir)
+                            .target(connection_clone.target)
+                            .render_info(Some(EdgeDir::Emit)),
+                    )
+                    .is_some();
+            }
+
+            if host_is_new {
+                let updated_host_node = self
+                    .new_nodes
+                    .borrow()
+                    .get(&connection.host)
+                    .unwrap()
+                    .update_edge_render_info(&connection, Some(EdgeDir::Emit));
+                self.new_nodes
+                    .borrow_mut()
+                    .insert(updated_host_node.id, updated_host_node);
+            } else if !contains_same_edge {
+                let existing_host_node = self.update_nodes.borrow().get(&connection.host).cloned();
+
+                let updated_host_node = if let Some(existing_host_node) = existing_host_node {
+                    existing_host_node.update_edge_render_info(&connection, Some(EdgeDir::Emit))
+                } else {
+                    let new_node = UpdateNode::new(connection.host);
+                    new_node.update_edge_render_info(&connection, Some(EdgeDir::Emit))
+                };
+
+                self.update_nodes
+                    .borrow_mut()
+                    .insert(updated_host_node.id, updated_host_node.clone());
+            }
+
+            if target_is_new {
+                let updated_target_node = self
+                    .new_nodes
+                    .borrow()
+                    .get(&connection.target)
+                    .unwrap()
+                    .update_edge_render_info(&connection.invert(), Some(EdgeDir::Recv));
+                self.new_nodes
+                    .borrow_mut()
+                    .insert(updated_target_node.id, updated_target_node);
+            } else if !contains_same_edge {
+                let existing_target_node =
+                    self.update_nodes.borrow().get(&connection.target).cloned();
+                let prepared_target_node = if let Some(existing_target_node) = existing_target_node
+                {
+                    existing_target_node
+                        .update_edge_render_info(&connection.invert(), Some(EdgeDir::Recv))
+                } else {
+                    let new_node = UpdateNode::new(connection.target);
+                    new_node.update_edge_render_info(&connection.invert(), Some(EdgeDir::Recv))
+                };
+
+                self.update_nodes
+                    .borrow_mut()
+                    .insert(prepared_target_node.id, prepared_target_node.clone());
+            }
+
+            all_connected_nodes.insert(connection.target);
+            remaining_nodes.remove(&connection.target);
+            newly_connected_nodes.insert(target_node);
         }
     }
 
     pub fn finalize(
         self,
         graph: &ViewGraph<T, E>,
-        valid_edge_types: Option<HashSet<E>>,
+        // Will be chosen with preference to the order they are specified
+        // None defaults to all edge types in the Emit direction
+        render_edge_types: Option<Vector<AllowedRenderEdgeSpecifier<E>>>,
         entry_point_temp_id: Option<TempId>,
     ) -> Result<FinalizedBlueprint<T, E>, Vec<GraphError>> {
+        let valid_render_edge_finders: Vector<EdgeFinder<E>> =
+            if let Some(render_edge_types) = &render_edge_types {
+                render_edge_types
+                    .iter()
+                    .map(|edge_type| {
+                        EdgeFinder::new()
+                            .edge_type(edge_type.edge_type.clone())
+                            .dir(edge_type.dir.clone())
+                        // .render_info(None)
+                    })
+                    .collect()
+            } else {
+                vector![EdgeFinder::new().dir(EdgeDir::Emit)
+                // .render_info(None)
+                ]
+            };
+
         self.update_temp_ids();
+
+        self.finalize_delete_nodes(graph);
+
+        self.finalize_removed_edges(graph);
+
+        self.find_potential_entries_for_displaced_nodes(graph);
+
+        self.set_render_edges(valid_render_edge_finders, entry_point_temp_id, graph);
+
         let errors = self.errors.clone().into_inner();
         if !errors.is_empty() {
             return Err(errors);
         }
-        self.finalize_delete_nodes(graph);
-        self.finalize_removed_edges(graph);
-        self.set_render_edges(valid_edge_types, entry_point_temp_id);
         Ok(FinalizedBlueprint {
             delete_nodes: self.delete_nodes.take(),
             new_nodes: self.new_nodes.take(),
@@ -498,79 +658,115 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BlueNew<'a, T: GraphTraits, E: GraphTraits> {
-    node: NewNode<T, E>,
+    pub node: NewNode<T, E>,
     pub blueprint: &'a BuildBlueprint<T, E>,
 }
 
 impl<'a, T: GraphTraits, E: GraphTraits> BlueNew<'a, T, E> {
-    pub fn set_data(mut self, data: T) -> Self {
-        self.node.data = data;
-        self.blueprint.add_node(self.node.clone());
-        self
+    pub fn set_data(&self, data: T) -> Self {
+        let new_node = NewNode {
+            data,
+            ..self.node.clone()
+        };
+        self.blueprint.add_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
-    pub fn set_id(mut self, id: Uid) -> Self {
+    pub fn set_id(&self, id: Uid) -> Self {
         let prev_id = self.node.id;
-        self.node.id = id;
         self.blueprint.remove_new_node(prev_id);
-        self.blueprint.add_node(self.node.clone());
-        self
+        let new_node = NewNode {
+            id,
+            ..self.node.clone()
+        };
+        self.blueprint.add_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
-    pub fn add_label(mut self, label: String) -> Self {
-        self.node.add_labels.insert(label);
-        self.blueprint.add_node(self.node.clone());
-        self
+    pub fn add_label(&self, label: String) -> Self {
+        let mut new_labels = self.node.add_labels.clone();
+        new_labels.insert(label);
+        let new_node = NewNode {
+            add_labels: new_labels,
+            ..self.node.clone()
+        };
+        self.blueprint.add_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
-    pub fn set_temp_id(mut self, temp_id: Uid) -> Self {
-        self.node.temp_id = Some(temp_id);
+    pub fn set_temp_id(&self, temp_id: Uid) -> Self {
+        let new_node = NewNode {
+            temp_id: Some(temp_id),
+            ..self.node.clone()
+        };
         self.blueprint
-            .borrow_mut()
             .temp_id_map
             .borrow_mut()
             .insert(temp_id, self.node.id);
-        self.blueprint.add_node(self.node.clone());
-        self
+        self.blueprint.add_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct BlueUpdate<'a, T: GraphTraits, E: GraphTraits> {
-    node: UpdateNode<T, E>,
-    blueprint: &'a BuildBlueprint<T, E>,
+    pub node: UpdateNode<T, E>,
+    pub blueprint: &'a BuildBlueprint<T, E>,
 }
 
 impl<'a, T: GraphTraits, E: GraphTraits> BlueUpdate<'a, T, E> {
-    pub fn update_data(mut self, data: T) -> Self {
-        self.node.replacement_data = Some(data);
-        self.blueprint.update_node(self.node.clone());
-        self
+    pub fn update_data(&self, data: T) -> Self {
+        let new_node = UpdateNode {
+            replacement_data: Some(data),
+            ..self.node.clone()
+        };
+        self.blueprint.update_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
 
-    pub fn add_label(mut self, label: String) -> Self {
-        self.node
-            .add_labels
-            .get_or_insert_with(HashSet::new)
-            .insert(label);
-        self.blueprint.update_node(self.node.clone());
-        self
+    pub fn add_label(&self, label: String) -> Self {
+        let mut new_labels = self.node.add_labels.clone().unwrap_or_default();
+        new_labels.insert(label);
+        let new_node = UpdateNode {
+            add_labels: Some(new_labels),
+            ..self.node.clone()
+        };
+        self.blueprint.update_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
 
-    pub fn remove_label(mut self, label: String) -> Self {
-        self.node
-            .remove_labels
-            .get_or_insert_with(HashSet::new)
-            .insert(label);
-
-        self.blueprint.update_node(self.node.clone());
-        self
+    pub fn remove_label(&self, label: String) -> Self {
+        let mut new_labels = self.node.remove_labels.clone().unwrap_or_default();
+        new_labels.insert(label);
+        let new_node = UpdateNode {
+            remove_labels: Some(new_labels),
+            ..self.node.clone()
+        };
+        self.blueprint.update_node(new_node.clone());
+        Self {
+            node: new_node,
+            ..self.clone()
+        }
     }
 
-    // pub fn set_render_edge(mut self, finder: EdgeFinder<E>) -> Self {
-    //     todo!()
-    // }
-
-    pub fn remove_edge(self, edge_finder: EdgeFinder<E>) -> Self {
+    pub fn remove_edge(&self, edge_finder: EdgeFinder<E>) -> Self {
         let host_hashset = hashset!(self.node.id);
         let mut edge_finder = edge_finder;
 
@@ -581,7 +777,7 @@ impl<'a, T: GraphTraits, E: GraphTraits> BlueUpdate<'a, T, E> {
             .borrow_mut()
             .insert(edge_finder);
 
-        self
+        self.clone()
     }
 }
 
@@ -599,19 +795,19 @@ impl<'b, T: GraphTraits, E: GraphTraits> GetIsNew for BlueUpdate<'b, T, E> {
     }
 }
 pub trait AddBlueprintEdges<'a, T: GraphTraits, E: GraphTraits> {
-    fn add_edge_existing<F>(self, direction: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
+    fn add_edge_existing<F>(&self, direction: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
     where
         F: FnOnce(BlueUpdate<'a, T, E>) -> BlueUpdate<'a, T, E>;
-    fn add_edge_new<F>(self, direction: EdgeDir, edge_type: E, f: F) -> Self
+    fn add_edge_new<F>(&self, direction: EdgeDir, edge_type: E, f: F) -> Self
     where
         F: FnOnce(BlueNew<'a, T, E>) -> BlueNew<'a, T, E>;
-    fn add_edge_temp(self, direction: EdgeDir, edge_type: E, temp_id: Uid) -> Self;
+    fn add_edge_temp(&self, direction: EdgeDir, edge_type: E, temp_id: Uid) -> Self;
 }
 
 macro_rules! implement_add_blueprint_edges {
     ($type:ty) => {
         impl<'a, T: GraphTraits, E: GraphTraits> AddBlueprintEdges<'a, T, E> for $type {
-            fn add_edge_new<F>(self, dir: EdgeDir, edge_type: E, f: F) -> Self
+            fn add_edge_new<F>(&self, dir: EdgeDir, edge_type: E, f: F) -> Self
             where
                 F: FnOnce(BlueNew<'a, T, E>) -> BlueNew<'a, T, E>,
             {
@@ -638,13 +834,13 @@ macro_rules! implement_add_blueprint_edges {
                 self.blueprint
                     .add_edge(this_edge.clone(), self.get_is_new());
                 if !self.get_is_new() {
-                    self.blueprint.add_entry_edge(this_edge.invert());
+                    self.blueprint.add_entry_edge(this_edge);
                 }
 
-                self
+                self.clone()
             }
 
-            fn add_edge_existing<F>(self, dir: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
+            fn add_edge_existing<F>(&self, dir: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
             where
                 F: FnOnce(BlueUpdate<'a, T, E>) -> BlueUpdate<'a, T, E>,
             {
@@ -665,13 +861,13 @@ macro_rules! implement_add_blueprint_edges {
                 self.blueprint
                     .add_edge(this_edge.clone(), self.get_is_new());
                 if self.get_is_new() {
-                    self.blueprint.add_entry_edge(this_edge);
+                    self.blueprint.add_entry_edge(this_edge.invert());
                 }
 
-                self
+                self.clone()
             }
 
-            fn add_edge_temp(self, dir: EdgeDir, edge_type: E, temp_id: Uid) -> Self {
+            fn add_edge_temp(&self, dir: EdgeDir, edge_type: E, temp_id: Uid) -> Self {
                 let this_edge = EdgeDescriptor {
                     dir,
                     edge_type,
@@ -685,7 +881,7 @@ macro_rules! implement_add_blueprint_edges {
                     .temp_edges
                     .borrow_mut()
                     .insert((this_edge, self.get_is_new()));
-                self
+                self.clone()
             }
         }
     };
@@ -698,18 +894,16 @@ implement_add_blueprint_edges!(BlueUpdate<'a, T, E>);
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use im::{hashset, HashSet};
+    use im::HashSet;
 
-    use crate::{
-        blueprint::{new_node::NewNode, update_node::UpdateNode},
-        graph::view_graph::ViewGraph,
-        reactive_node::build_reactive_node::BuildReactiveNode,
-        EdgeDescriptor, EdgeDir, EdgeFinder,
-    };
+    use crate::graph::view_graph::ViewGraph;
+    use crate::prelude::reactive_node::build_reactive_node::BuildReactiveNode;
+    use crate::prelude::*;
 
-    use super::{AddBlueprintEdges, BuildBlueprint};
+    use super::{AddBlueprintEdges, BuildBlueprint, FinalizedBlueprint};
 
-    fn setup_graph() -> ViewGraph<String, String> {
+    /// (999) -> (998) -> (999)
+    fn manual_setup_graph() -> ViewGraph<String, String> {
         let mut graph = ViewGraph::new();
         let mut edges1 = HashSet::new();
         edges1.insert(EdgeDescriptor {
@@ -717,7 +911,7 @@ mod tests {
             edge_type: "existing_edge_type".into(),
             host: 999,
             target: 998,
-            render_info: None,
+            render_info: Some(EdgeDir::Emit),
         });
         let (read_reactive_node_1, write_reative_node_1) =
             BuildReactiveNode::<String, String>::new()
@@ -731,13 +925,34 @@ mod tests {
             edge_type: "existing_edge_type".into(),
             host: 998,
             target: 999,
-            render_info: None,
+            render_info: Some(EdgeDir::Recv),
+        });
+        edges2.insert(EdgeDescriptor {
+            dir: EdgeDir::Emit,
+            edge_type: "existing_edge_type".into(),
+            host: 998,
+            target: 997,
+            render_info: Some(EdgeDir::Emit),
         });
         let (read_reactive_node_2, write_reative_node_2) =
             BuildReactiveNode::<String, String>::new()
-                .id(999)
+                .id(998)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges2)
+                .build();
+        let mut edges3 = HashSet::new();
+        edges3.insert(EdgeDescriptor {
+            dir: EdgeDir::Recv,
+            edge_type: "existing_edge_type".into(),
+            host: 997,
+            target: 998,
+            render_info: Some(EdgeDir::Recv),
+        });
+        let (read_reactive_node_3, write_reative_node_3) =
+            BuildReactiveNode::<String, String>::new()
+                .id(997)
+                .data("Existent node 1".into())
+                .map_edges_from_bp(&edges3)
                 .build();
 
         graph.nodes.insert(
@@ -754,53 +969,18 @@ mod tests {
                 RefCell::new(write_reative_node_2),
             ),
         );
+        graph.nodes.insert(
+            997,
+            (
+                Rc::new(read_reactive_node_3),
+                RefCell::new(write_reative_node_3),
+            ),
+        );
 
         graph
     }
 
-    #[test]
-    fn test() {
-        let graph = setup_graph();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
-
-        // let mut initial_node = NewNode::<String, String>::new();
-        // initial_node.id = 42;
-        // initial_node.data = "Initial Node".into();
-
-        build_blueprint
-            .start_with_new_node()
-            .set_id(42)
-            .set_data("Initial Node".into())
-            .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
-                blue_new
-                    .set_data("data".into())
-                    .add_label("label".into())
-                    .set_temp_id(1)
-                    .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
-                        blue_new
-                            .set_data("data".into())
-                            .add_label("label".into())
-                            .set_temp_id(2)
-                    })
-            });
-        // let mut initial_node = NewNode::<String, String>::new();
-        // initial_node.id = 43;
-        // initial_node.data = "Coming from the other side".into();
-        build_blueprint
-            .start_with_new_node()
-            .set_id(43)
-            .set_data("Coming from the other side".into())
-            .add_edge_temp(EdgeDir::Recv, "edge_type".into(), 1);
-        // build_blueprint.delete_node(998);
-        // build_bluerpint.start_with_
-        build_blueprint
-            .start_with_update_node(UpdateNode::new(999))
-            .update_data("I have changed".into())
-            .add_edge_temp(EdgeDir::Emit, "edge_type".into(), 1)
-            .remove_edge(EdgeFinder::new().target(hashset!(998)));
-
-        let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
-
+    fn log_finalize_results(build_blueprint: &FinalizedBlueprint<String, String>) {
         for node in build_blueprint.new_nodes.values() {
             println!("+ New Node {:?}", node.id);
             if node.temp_id.is_some() {
@@ -834,6 +1014,237 @@ mod tests {
         for node in build_blueprint.delete_nodes.iter() {
             println!("- Delete Node {:?}", node);
         }
-        panic!("test");
+    }
+
+    #[test]
+    fn should_generate_correct_graph_from_only_new_nodes() {
+        let mut graph = ViewGraph::new();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(1)
+            .set_temp_id(1)
+            .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                blue_new
+                    .set_id(2)
+                    .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                        blue_new.set_id(3)
+                    })
+            });
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1)).unwrap();
+
+        graph.add_nodes(build_blueprint.new_nodes);
+        graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
+        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+
+        assert_eq!(graph.nodes.len(), 3);
+
+        assert!(graph
+            .nodes
+            .get(&1)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(2)
+                    .dir(EdgeDir::Emit)
+                    .render_info(Some(EdgeDir::Emit))
+            )
+            .is_some());
+
+        assert!(graph
+            .nodes
+            .get(&2)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(3)
+                    .dir(EdgeDir::Emit)
+                    .render_info(Some(EdgeDir::Emit))
+            )
+            .is_some(),);
+        assert!(graph
+            .nodes
+            .get(&2)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(1)
+                    .dir(EdgeDir::Recv)
+                    .render_info(Some(EdgeDir::Recv))
+            )
+            .is_some(),);
+        assert!(graph
+            .nodes
+            .get(&3)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(2)
+                    .dir(EdgeDir::Recv)
+                    .render_info(Some(EdgeDir::Recv))
+            )
+            .is_some(),);
+    }
+
+    #[test]
+    fn should_fail_if_new_node_cannot_be_connected() {
+        let graph = ViewGraph::new();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(1)
+            .set_temp_id(1)
+            .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                blue_new.set_id(2)
+            });
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(3)
+            .set_temp_id(2);
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1));
+
+        assert!(build_blueprint.is_err());
+    }
+
+    #[test]
+    fn should_correctly_attach_new_node_subgraph_to_existing_graph() {
+        let mut graph = manual_setup_graph();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(1)
+            .set_temp_id(1)
+            .add_edge_existing(EdgeDir::Recv, "edge_type".into(), 999, |blue_update| {
+                blue_update
+            })
+            .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                blue_new
+                    .set_id(2)
+                    .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                        blue_new.set_id(3)
+                    })
+            });
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
+
+        graph.add_nodes(build_blueprint.new_nodes);
+        graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
+        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+
+        assert!(graph
+            .nodes
+            .get(&1)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(999)
+                    .render_info(Some(EdgeDir::Recv))
+            )
+            .is_some());
+    }
+
+    #[test]
+    fn should_delete_existing_nodes_which_are_no_longer_renderable() {
+        let graph = manual_setup_graph();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_update_node(999)
+            .remove_edge(EdgeFinder::new().target(998));
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
+        assert!(build_blueprint.delete_nodes.contains(&998));
+        assert!(build_blueprint.delete_nodes.contains(&997));
+    }
+
+    #[test]
+    fn should_reconnect_existing_nodes_which_were_disconnected_if_possible() {
+        let mut graph = manual_setup_graph();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(1)
+            .add_edge_existing(EdgeDir::Recv, "edge_type".into(), 999, |blue_update| {
+                blue_update.remove_edge(EdgeFinder::new().target(998))
+            })
+            .add_edge_existing(EdgeDir::Emit, "edge_type".into(), 997, |blue_update| {
+                blue_update
+            });
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
+        assert!(build_blueprint.delete_nodes.contains(&998));
+        assert!(!build_blueprint.delete_nodes.contains(&997));
+
+        log_finalize_results(&build_blueprint);
+
+        graph.add_nodes(build_blueprint.new_nodes);
+        graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
+        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+
+        assert!(graph
+            .nodes
+            .get(&997)
+            .unwrap()
+            .0
+            .search_for_edge(&EdgeFinder::new().target(1).render_info(Some(EdgeDir::Recv)))
+            .is_some());
+    }
+
+    #[test]
+    fn should_reconnect_child_existing_nodes_which_were_disconnected_using_new_node_if_possible() {
+        let mut graph = manual_setup_graph();
+        let build_blueprint = BuildBlueprint::<String, String>::new();
+
+        build_blueprint
+            .start_with_new_node()
+            .set_id(1)
+            .add_edge_existing(EdgeDir::Recv, "edge_type".into(), 999, |blue_update| {
+                blue_update.remove_edge(EdgeFinder::new().target(998))
+            })
+            .add_edge_existing(EdgeDir::Emit, "edge_type".into(), 998, |blue_update| {
+                blue_update
+            });
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
+        log_finalize_results(&build_blueprint);
+
+        assert!(!build_blueprint.delete_nodes.contains(&998));
+        assert!(!build_blueprint.delete_nodes.contains(&997));
+
+        graph.add_nodes(build_blueprint.new_nodes);
+        graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
+        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+
+        assert!(graph
+            .nodes
+            .get(&998)
+            .unwrap()
+            .0
+            .search_for_edge(&EdgeFinder::new().target(1).render_info(Some(EdgeDir::Recv)))
+            .is_some());
+
+        assert!(graph
+            .nodes
+            .get(&997)
+            .unwrap()
+            .0
+            .search_for_edge(
+                &EdgeFinder::new()
+                    .target(998)
+                    .render_info(Some(EdgeDir::Recv))
+            )
+            .is_some());
     }
 }
