@@ -13,27 +13,33 @@ use super::reactive_node::{
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ViewGraph<T: GraphTraits, E: GraphTraits> {
-    pub nodes: HashMap<Uid, (Rc<ReadReactiveNode<T, E>>, RefCell<WriteReactiveNode<T, E>>)>,
+pub struct ViewGraph<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
+    pub nodes: HashMap<
+        Uid,
+        (
+            Rc<ReadReactiveNode<T, E, A>>,
+            RefCell<WriteReactiveNode<T, E, A>>,
+        ),
+    >,
     pub label_map: HashMap<String, Vector<Uid>>,
 }
 
-impl<T: GraphTraits, E: GraphTraits> Default for ViewGraph<T, E> {
+impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> Default for ViewGraph<T, E, A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: GraphTraits, E: GraphTraits> ViewGraph<T, E> {
+impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ViewGraph<T, E, A> {
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
             label_map: HashMap::new(),
         }
     }
-    pub fn add_nodes(&mut self, nodes: HashMap<Uid, NewNode<T, E>>) {
+    pub fn add_nodes(&mut self, nodes: HashMap<Uid, NewNode<T, E>>, action_data: A) {
         for (_id, node) in nodes {
-            self.add_node(node);
+            self.add_node(node, Rc::new(action_data.clone()));
         }
     }
     pub fn delete_nodes(&mut self, nodes: HashSet<Uid>) -> Result<(), GraphError> {
@@ -42,18 +48,29 @@ impl<T: GraphTraits, E: GraphTraits> ViewGraph<T, E> {
         }
         Ok(())
     }
-    pub fn update_nodes(&self, nodes: HashMap<Uid, UpdateNode<T, E>>) -> Result<(), GraphError> {
-        for (_id, node) in nodes {
-            self.update_node(node)?;
+    pub fn update_nodes(
+        &self,
+        update_nodes: HashMap<Uid, UpdateNode<T, E>>,
+        action_data: A,
+    ) -> Result<(), GraphError> {
+        let action_data = Rc::new(action_data);
+        for (_id, node) in update_nodes {
+            self.update_node(node, action_data.clone())?;
         }
         Ok(())
     }
 
-    fn add_node(&mut self, node: NewNode<T, E>) {
-        let id = node.id;
-        let (read_node, write_node) = BuildReactiveNode::new().ingest_from_blueprint(node).build();
+    fn add_node(&mut self, add_node: NewNode<T, E>, action_data: Rc<A>) {
+        let id = add_node.id;
+        let (read_node, write_node) = BuildReactiveNode::new()
+            .ingest_from_blueprint(add_node, action_data)
+            .build();
         for label in read_node.labels.get_untracked().iter() {
-            let mut nodes_with_label = self.label_map.get(label).unwrap_or(&Vector::new()).clone();
+            let mut nodes_with_label = self
+                .label_map
+                .get::<String>(label)
+                .unwrap_or(&Vector::new())
+                .clone();
             nodes_with_label.push_back(id);
             self.label_map.insert(label.clone(), nodes_with_label);
         }
@@ -61,14 +78,18 @@ impl<T: GraphTraits, E: GraphTraits> ViewGraph<T, E> {
             .insert(id, (Rc::new(read_node), RefCell::new(write_node)));
     }
 
-    fn update_node(&self, node: UpdateNode<T, E>) -> Result<(), GraphError> {
-        let graph_node = self.nodes.get(&node.id);
+    fn update_node(
+        &self,
+        update_node: UpdateNode<T, E>,
+        action_data: Rc<A>,
+    ) -> Result<(), GraphError> {
+        let graph_node = self.nodes.get(&update_node.id);
         if let Some(graph_node) = graph_node {
-            graph_node.1.borrow_mut().update(node);
+            graph_node.1.borrow_mut().update(update_node, action_data);
         } else {
             return Err(GraphError::Blueprint(format!(
                 "Update Node: Failed to find node, ID: {:?}",
-                node.id
+                update_node.id
             )));
         }
         Ok(())

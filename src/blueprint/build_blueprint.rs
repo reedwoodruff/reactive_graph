@@ -128,9 +128,9 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
     }
 
     // Edge should be given from the perspective of the potentially displaced node
-    fn find_and_catalog_displaced_nodes(
+    fn find_and_catalog_displaced_nodes<A: GraphTraits>(
         &self,
-        graph: &ViewGraph<T, E>,
+        graph: &ViewGraph<T, E, A>,
         edge_to_check: EdgeDescriptor<E>,
     ) {
         if edge_to_check
@@ -180,7 +180,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn finalize_delete_nodes(&self, graph: &ViewGraph<T, E>) {
+    fn finalize_delete_nodes<A: GraphTraits>(&self, graph: &ViewGraph<T, E, A>) {
         for node_id in self.delete_nodes.borrow().iter() {
             // Since entry edges should represent everywhere a new node is being connected to an existing node,
             // we should be able to check the entry edges for anywhere the a new node was referencing a deleted node, and remove those edges
@@ -240,7 +240,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn finalize_removed_edges(&self, graph: &ViewGraph<T, E>) {
+    fn finalize_removed_edges<A: GraphTraits>(&self, graph: &ViewGraph<T, E, A>) {
         for edge_finder in self.remove_edge_finders.borrow().iter() {
             // Find the edge(s) in the graph
             // We are manually setting the host in the BlueUpdate method.
@@ -349,7 +349,10 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn find_potential_entries_for_displaced_nodes(&self, graph: &ViewGraph<T, E>) {
+    fn find_potential_entries_for_displaced_nodes<A: GraphTraits>(
+        &self,
+        graph: &ViewGraph<T, E, A>,
+    ) {
         for (id, displaced_node) in self.displaced_nodes.borrow().iter() {
             displaced_node.add_edges.iter().for_each(|edge| {
                 if graph.nodes.get(&edge.target).is_some()
@@ -364,11 +367,11 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn set_render_edges(
+    fn set_render_edges<A: GraphTraits>(
         &self,
         valid_render_edge_finders: Vector<EdgeFinder<E>>,
         entry_point_temp_id: Option<TempId>,
-        graph: &ViewGraph<T, E>,
+        graph: &ViewGraph<T, E, A>,
     ) {
         let flipped_valid_edge_finders: Vector<EdgeFinder<E>> = valid_render_edge_finders
             .iter()
@@ -611,9 +614,9 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    pub fn finalize(
+    pub fn finalize<A: GraphTraits>(
         self,
-        graph: &ViewGraph<T, E>,
+        graph: &ViewGraph<T, E, A>,
         // Will be chosen with preference to the order they are specified
         // None defaults to all edge types in the Emit direction
         render_edge_types: Option<Vector<AllowedRenderEdgeSpecifier<E>>>,
@@ -903,7 +906,7 @@ mod tests {
     use super::{AddBlueprintEdges, BuildBlueprint, FinalizedBlueprint};
 
     /// (999) -> (998) -> (999)
-    fn manual_setup_graph() -> ViewGraph<String, String> {
+    fn manual_setup_graph() -> ViewGraph<String, String, String> {
         let mut graph = ViewGraph::new();
         let mut edges1 = HashSet::new();
         edges1.insert(EdgeDescriptor {
@@ -914,7 +917,7 @@ mod tests {
             render_info: Some(EdgeDir::Emit),
         });
         let (read_reactive_node_1, write_reative_node_1) =
-            BuildReactiveNode::<String, String>::new()
+            BuildReactiveNode::<String, String, String>::new()
                 .id(999)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges1)
@@ -935,7 +938,7 @@ mod tests {
             render_info: Some(EdgeDir::Emit),
         });
         let (read_reactive_node_2, write_reative_node_2) =
-            BuildReactiveNode::<String, String>::new()
+            BuildReactiveNode::<String, String, String>::new()
                 .id(998)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges2)
@@ -949,7 +952,7 @@ mod tests {
             render_info: Some(EdgeDir::Recv),
         });
         let (read_reactive_node_3, write_reative_node_3) =
-            BuildReactiveNode::<String, String>::new()
+            BuildReactiveNode::<String, String, String>::new()
                 .id(997)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges3)
@@ -1033,11 +1036,17 @@ mod tests {
                     })
             });
 
-        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1)).unwrap();
+        let build_blueprint = build_blueprint
+            .finalize::<String>(&graph, None, Some(1))
+            .unwrap();
 
-        graph.add_nodes(build_blueprint.new_nodes);
+        let action_data = "update".to_string();
+
+        graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
-        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+        graph
+            .update_nodes(build_blueprint.update_nodes, action_data.clone())
+            .unwrap();
 
         assert_eq!(graph.nodes.len(), 3);
 
@@ -1110,7 +1119,7 @@ mod tests {
             .set_id(3)
             .set_temp_id(2);
 
-        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1));
+        let build_blueprint = build_blueprint.finalize::<String>(&graph, None, Some(1));
 
         assert!(build_blueprint.is_err());
     }
@@ -1137,9 +1146,12 @@ mod tests {
 
         let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
 
-        graph.add_nodes(build_blueprint.new_nodes);
+        let action_data = "update".to_string();
+        graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
-        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+        graph
+            .update_nodes(build_blueprint.update_nodes, action_data.clone())
+            .unwrap();
 
         assert!(graph
             .nodes
@@ -1189,9 +1201,12 @@ mod tests {
 
         log_finalize_results(&build_blueprint);
 
-        graph.add_nodes(build_blueprint.new_nodes);
+        let action_data = "update".to_string();
+        graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
-        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+        graph
+            .update_nodes(build_blueprint.update_nodes, action_data.clone())
+            .unwrap();
 
         assert!(graph
             .nodes
@@ -1223,9 +1238,12 @@ mod tests {
         assert!(!build_blueprint.delete_nodes.contains(&998));
         assert!(!build_blueprint.delete_nodes.contains(&997));
 
-        graph.add_nodes(build_blueprint.new_nodes);
+        let action_data = "update".to_string();
+        graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
-        graph.update_nodes(build_blueprint.update_nodes).unwrap();
+        graph
+            .update_nodes(build_blueprint.update_nodes, "action".to_string())
+            .unwrap();
 
         assert!(graph
             .nodes
