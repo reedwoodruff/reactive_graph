@@ -3,6 +3,8 @@ use uuid::Uuid;
 
 use crate::prelude::*;
 
+use super::delete_node::DeleteNode;
+
 pub type TempId = Uid;
 
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]
@@ -100,6 +102,15 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
             None
         } else {
             Some(render_edge.iter().next().unwrap().clone())
+        }
+    }
+
+    pub fn history_invert(&self) -> DeleteNode<T, E> {
+        DeleteNode {
+            id: self.id,
+            data: self.data.clone(),
+            remove_labels: self.add_labels.clone(),
+            remove_edges: self.add_edges.clone(),
         }
     }
 }

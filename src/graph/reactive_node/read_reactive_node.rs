@@ -65,6 +65,15 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ReadReactiveNode<T, E, A> {
         Some(found_edges)
     }
 
+    pub fn get_render_edge(&self) -> EdgeDescriptor<E> {
+        self.search_for_edge(&EdgeFinder::new().render_info(Some(EdgeDir::Recv)))
+            .expect("Should have render edge if node exists")
+            .iter()
+            .next()
+            .expect("Should have render edge if node exists")
+            .clone()
+    }
+
     pub fn convert_all_edges_to_hashset(&self) -> HashSet<EdgeDescriptor<E>> {
         self.outgoing_edges
             .get_untracked()
@@ -76,7 +85,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ReadReactiveNode<T, E, A> {
                     acc
                 },
             )
-            .union(self.outgoing_edges.get_untracked().iter().fold(
+            .union(self.incoming_edges.get_untracked().iter().fold(
                 HashSet::new(),
                 |mut acc: HashSet<EdgeDescriptor<E>>, (_edge_type, edges)| {
                     acc.extend(edges.clone());

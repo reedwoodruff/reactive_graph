@@ -9,7 +9,7 @@ use leptos::*;
 use crate::blueprint::new_node::NewNode;
 use crate::prelude::*;
 
-use super::last_action::LastAction;
+use super::last_action::{ActionData, LastAction};
 use super::read_reactive_node::ReadReactiveNode;
 use super::write_reactive_node::WriteReactiveNode;
 
@@ -126,15 +126,14 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> BuildReactiveNode<T, E, A> 
         }
     }
 
-    pub fn ingest_from_blueprint(&self, bp: NewNode<T, E>, action_data: Rc<A>) -> Self {
+    pub fn ingest_from_blueprint(&self, bp: NewNode<T, E>, action_data: Rc<ActionData<A>>) -> Self {
         self.data(bp.data)
             .id(bp.id)
             .map_edges_from_bp(&bp.add_edges)
             .add_labels(bp.add_labels)
-            .add_last_action(LastAction {
+            .add_last_action(LastAction::<T, E, A> {
                 action_data,
                 update_info: None,
-                prev_node: None,
             })
     }
 
@@ -174,7 +173,6 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> BuildReactiveNode<T, E, A> 
             incoming_edges: write_incoming_edges,
             outgoing_edges: write_outgoing_edges,
             last_action: write_last_action,
-            read_handle: read_node.clone(),
         };
 
         (read_node, write_node)

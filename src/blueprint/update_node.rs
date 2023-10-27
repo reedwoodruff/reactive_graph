@@ -1,6 +1,5 @@
 use im::HashSet;
 
-
 use crate::prelude::*;
 
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]

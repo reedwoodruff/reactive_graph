@@ -7,6 +7,8 @@ use crate::graph::view_graph::ViewGraph;
 use crate::prelude::*;
 
 use super::{
+    delete_node::DeleteNode,
+    finalized_update_node::{FinalizedUpdateNode, UpdateNodeReplacementData},
     new_node::{NewNode, TempId},
     update_node::UpdateNode,
 };
@@ -18,12 +20,6 @@ pub struct AllowedRenderEdgeSpecifier<E: GraphTraits> {
     pub dir: EdgeDir,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct FinalizedBlueprint<T: GraphTraits, E: GraphTraits> {
-    pub new_nodes: HashMap<Uid, NewNode<T, E>>,
-    pub update_nodes: HashMap<Uid, UpdateNode<T, E>>,
-    pub delete_nodes: HashSet<Uid>,
-}
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits> {
     new_nodes: RefCell<HashMap<Uid, NewNode<T, E>>>,
@@ -649,14 +645,43 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
 
         self.set_render_edges(valid_render_edge_finders, entry_point_temp_id, graph);
 
+        let mut finalized_delete_nodes = HashMap::<Uid, DeleteNode<T, E>>::new();
+        for delete_id in self.delete_nodes.take().iter() {
+            finalized_delete_nodes.insert(
+                *delete_id,
+                DeleteNode::from_read_reactive_node(&graph.nodes.get(delete_id).unwrap().0),
+            );
+        }
+        let mut finalized_update_nodes = HashMap::<Uid, FinalizedUpdateNode<T, E>>::new();
+        for (id, update_node) in self.update_nodes.take() {
+            let finalized_replacement_data =
+                update_node
+                    .replacement_data
+                    .map(|replacement_data| UpdateNodeReplacementData {
+                        new_data: replacement_data,
+                        prev_data: graph.nodes.get(&id).unwrap().0.data.get_untracked(),
+                    });
+            finalized_update_nodes.insert(
+                id,
+                FinalizedUpdateNode {
+                    replacement_data: finalized_replacement_data,
+                    add_edges: update_node.add_edges,
+                    add_labels: update_node.add_labels,
+                    id: update_node.id,
+                    remove_edges: update_node.remove_edges,
+                    remove_labels: update_node.remove_labels,
+                },
+            );
+        }
+
         let errors = self.errors.clone().into_inner();
         if !errors.is_empty() {
             return Err(errors);
         }
         Ok(FinalizedBlueprint {
-            delete_nodes: self.delete_nodes.take(),
+            delete_nodes: finalized_delete_nodes,
             new_nodes: self.new_nodes.take(),
-            update_nodes: self.update_nodes.take(),
+            update_nodes: finalized_update_nodes,
         })
     }
 }
@@ -899,9 +924,10 @@ mod tests {
 
     use im::HashSet;
 
-    use crate::graph::view_graph::ViewGraph;
     use crate::prelude::reactive_node::build_reactive_node::BuildReactiveNode;
+    use crate::prelude::reactive_node::last_action::ActionData;
     use crate::prelude::*;
+    use crate::{graph::view_graph::ViewGraph, prelude::reactive_node::last_action::LastAction};
 
     use super::{AddBlueprintEdges, BuildBlueprint, FinalizedBlueprint};
 
@@ -921,6 +947,10 @@ mod tests {
                 .id(999)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges1)
+                .add_last_action(LastAction {
+                    action_data: Rc::new(ActionData::new("manual create".to_string())),
+                    update_info: None,
+                })
                 .build();
         let mut edges2 = HashSet::new();
         edges2.insert(EdgeDescriptor {
@@ -942,6 +972,10 @@ mod tests {
                 .id(998)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges2)
+                .add_last_action(LastAction {
+                    action_data: Rc::new(ActionData::new("manual create".to_string())),
+                    update_info: None,
+                })
                 .build();
         let mut edges3 = HashSet::new();
         edges3.insert(EdgeDescriptor {
@@ -956,6 +990,10 @@ mod tests {
                 .id(997)
                 .data("Existent node 1".into())
                 .map_edges_from_bp(&edges3)
+                .add_last_action(LastAction {
+                    action_data: Rc::new(ActionData::new("manual create".to_string())),
+                    update_info: None,
+                })
                 .build();
 
         graph.nodes.insert(
@@ -1040,7 +1078,7 @@ mod tests {
             .finalize::<String>(&graph, None, Some(1))
             .unwrap();
 
-        let action_data = "update".to_string();
+        let action_data = ActionData::new("update".to_string());
 
         graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
@@ -1146,7 +1184,7 @@ mod tests {
 
         let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
 
-        let action_data = "update".to_string();
+        let action_data = ActionData::new("update".to_string());
         graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
         graph
@@ -1176,8 +1214,8 @@ mod tests {
             .remove_edge(EdgeFinder::new().target(998));
 
         let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
-        assert!(build_blueprint.delete_nodes.contains(&998));
-        assert!(build_blueprint.delete_nodes.contains(&997));
+        assert!(build_blueprint.delete_nodes.get(&998).is_some());
+        assert!(build_blueprint.delete_nodes.get(&997).is_some());
     }
 
     #[test]
@@ -1196,12 +1234,12 @@ mod tests {
             });
 
         let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
-        assert!(build_blueprint.delete_nodes.contains(&998));
-        assert!(!build_blueprint.delete_nodes.contains(&997));
+        assert!(build_blueprint.delete_nodes.get(&998).is_some());
+        assert!(build_blueprint.delete_nodes.get(&997).is_none());
 
         log_finalize_results(&build_blueprint);
 
-        let action_data = "update".to_string();
+        let action_data = ActionData::new("update".to_string());
         graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
         graph
@@ -1235,14 +1273,14 @@ mod tests {
         let build_blueprint = build_blueprint.finalize(&graph, None, None).unwrap();
         log_finalize_results(&build_blueprint);
 
-        assert!(!build_blueprint.delete_nodes.contains(&998));
-        assert!(!build_blueprint.delete_nodes.contains(&997));
+        assert!(build_blueprint.delete_nodes.get(&998).is_none());
+        assert!(build_blueprint.delete_nodes.get(&997).is_none());
 
-        let action_data = "update".to_string();
+        let action_data = ActionData::new("update".to_string());
         graph.add_nodes(build_blueprint.new_nodes, action_data.clone());
         graph.delete_nodes(build_blueprint.delete_nodes).unwrap();
         graph
-            .update_nodes(build_blueprint.update_nodes, "action".to_string())
+            .update_nodes(build_blueprint.update_nodes, action_data.clone())
             .unwrap();
 
         assert!(graph

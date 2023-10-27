@@ -4,16 +4,16 @@ use im::{HashSet, Vector};
 // use leptos_reactive::{SignalSet, SignalUpdate, WriteSignal};
 use leptos::*;
 
-use crate::blueprint::update_node::UpdateNode;
+use crate::prelude::finalized_update_node::FinalizedUpdateNode;
 use crate::prelude::*;
 
+use super::last_action::ActionData;
 use super::{
     super::{
         common::{EdgeDescriptor, Uid},
         GraphTraits,
     },
-    last_action::{LastAction, PrevReadReactiveNode},
-    read_reactive_node::ReadReactiveNode,
+    last_action::LastAction,
 };
 use im::hashmap::HashMap;
 
@@ -25,27 +25,23 @@ pub struct WriteReactiveNode<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub incoming_edges: WriteSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
     pub outgoing_edges: WriteSignal<HashMap<E, Vector<EdgeDescriptor<E>>>>,
     pub last_action: WriteSignal<LastAction<T, E, A>>,
-    pub(super) read_handle: ReadReactiveNode<T, E, A>,
 }
 
 impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> WriteReactiveNode<T, E, A> {
-    pub fn update(&mut self, update_node: UpdateNode<T, E>, action_data: Rc<A>) {
+    pub fn update(
+        &mut self,
+        update_node: FinalizedUpdateNode<T, E>,
+        action_data: Rc<ActionData<A>>,
+    ) {
         let new_last_action = LastAction {
             action_data,
             update_info: Some(update_node.clone()),
-            prev_node: Some(PrevReadReactiveNode {
-                id: self.read_handle.id,
-                data: self.read_handle.data.get_untracked(),
-                labels: self.read_handle.labels.get_untracked(),
-                incoming_edges: self.read_handle.incoming_edges.get_untracked(),
-                outgoing_edges: self.read_handle.outgoing_edges.get_untracked(),
-            }),
         };
         self.last_action.set(new_last_action);
 
         // log!("Updating signal, node: {:?}", node.id);
         if let Some(data) = update_node.replacement_data {
-            self.data.set(data);
+            self.data.set(data.new_data);
         }
         if let Some(labels) = update_node.add_labels {
             self.add_labels(labels);

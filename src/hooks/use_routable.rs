@@ -1,11 +1,11 @@
-use std::{cell::RefCell, fmt::Formatter, rc::Rc};
+use std::{fmt::Formatter, rc::Rc};
 
-use crate::prelude::{
-    new_node::TempId, reactive_node::read_reactive_node::ReadReactiveNode,
-    utils::log_finalize_results, view_graph::ViewGraph, *,
+use crate::{
+    history::history_interface::HistoryInterface,
+    prelude::{new_node::TempId, reactive_node::read_reactive_node::ReadReactiveNode, *},
 };
-use im::Vector;
-use leptos::{logging::log, *};
+
+use leptos::*;
 
 #[derive(Clone)]
 pub struct UseRoutableReturn<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
@@ -16,6 +16,7 @@ pub struct UseRoutableReturn<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub(super) initiate_graph_closure:
         Rc<dyn Fn(BuildBlueprint<T, E>, A, TempId) -> Result<Uid, GraphError>>,
     pub graph_lock: Rc<GraphLock>,
+    pub history: Rc<HistoryInterface<T, E, A>>,
 }
 impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> core::fmt::Debug
     for UseRoutableReturn<T, E, A>

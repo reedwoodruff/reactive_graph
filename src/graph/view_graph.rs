@@ -2,14 +2,16 @@
 use leptos::*;
 use std::{cell::RefCell, rc::Rc};
 
-use im::{hashmap::HashMap, HashSet};
+use im::hashmap::HashMap;
 
-use crate::prelude::{new_node::NewNode, update_node::UpdateNode, *};
+use crate::prelude::{
+    delete_node::DeleteNode, finalized_update_node::FinalizedUpdateNode, new_node::NewNode, *,
+};
 use im::Vector;
 
 use super::reactive_node::{
-    build_reactive_node::BuildReactiveNode, read_reactive_node::ReadReactiveNode,
-    write_reactive_node::WriteReactiveNode,
+    build_reactive_node::BuildReactiveNode, last_action::ActionData,
+    read_reactive_node::ReadReactiveNode, write_reactive_node::WriteReactiveNode,
 };
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -37,21 +39,24 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ViewGraph<T, E, A> {
             label_map: HashMap::new(),
         }
     }
-    pub fn add_nodes(&mut self, nodes: HashMap<Uid, NewNode<T, E>>, action_data: A) {
+    pub fn add_nodes(&mut self, nodes: HashMap<Uid, NewNode<T, E>>, action_data: ActionData<A>) {
         for (_id, node) in nodes {
             self.add_node(node, Rc::new(action_data.clone()));
         }
     }
-    pub fn delete_nodes(&mut self, nodes: HashSet<Uid>) -> Result<(), GraphError> {
-        for node in nodes {
-            self.delete_node(node)?;
+    pub fn delete_nodes(
+        &mut self,
+        nodes: HashMap<Uid, DeleteNode<T, E>>,
+    ) -> Result<(), GraphError> {
+        for (id, _node) in nodes {
+            self.delete_node(id)?;
         }
         Ok(())
     }
     pub fn update_nodes(
         &self,
-        update_nodes: HashMap<Uid, UpdateNode<T, E>>,
-        action_data: A,
+        update_nodes: HashMap<Uid, FinalizedUpdateNode<T, E>>,
+        action_data: ActionData<A>,
     ) -> Result<(), GraphError> {
         let action_data = Rc::new(action_data);
         for (_id, node) in update_nodes {
@@ -60,7 +65,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ViewGraph<T, E, A> {
         Ok(())
     }
 
-    fn add_node(&mut self, add_node: NewNode<T, E>, action_data: Rc<A>) {
+    fn add_node(&mut self, add_node: NewNode<T, E>, action_data: Rc<ActionData<A>>) {
         let id = add_node.id;
         let (read_node, write_node) = BuildReactiveNode::new()
             .ingest_from_blueprint(add_node, action_data)
@@ -80,8 +85,8 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ViewGraph<T, E, A> {
 
     fn update_node(
         &self,
-        update_node: UpdateNode<T, E>,
-        action_data: Rc<A>,
+        update_node: FinalizedUpdateNode<T, E>,
+        action_data: Rc<ActionData<A>>,
     ) -> Result<(), GraphError> {
         let graph_node = self.nodes.get(&update_node.id);
         if let Some(graph_node) = graph_node {
