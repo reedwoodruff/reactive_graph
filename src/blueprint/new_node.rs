@@ -61,7 +61,10 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
         Self { id, ..self.clone() }
     }
 
-    pub fn find_edges(&self, edge_finder: &EdgeFinder<E>) -> HashSet<EdgeDescriptor<E>> {
+    pub fn find_edges<A: GraphTraits>(
+        &self,
+        edge_finder: &EdgeFinder<T, E, A>,
+    ) -> HashSet<EdgeDescriptor<E>> {
         let mut edges = HashSet::new();
         for edge in self.add_edges.iter() {
             if (edge_finder.match_all.is_none()
@@ -96,8 +99,9 @@ impl<T: GraphTraits, E: GraphTraits> NewNode<T, E> {
         }
     }
 
-    pub fn get_render_edge(&self) -> Option<EdgeDescriptor<E>> {
-        let render_edge = self.find_edges(&EdgeFinder::new().render_info(Some(EdgeDir::Recv)));
+    pub fn get_render_edge<A: GraphTraits>(&self) -> Option<EdgeDescriptor<E>> {
+        let render_edge =
+            self.find_edges(&EdgeFinder::<T, E, A>::new().render_info(Some(EdgeDir::Recv)));
         if render_edge.is_empty() {
             None
         } else {

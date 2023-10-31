@@ -21,7 +21,7 @@ pub struct AllowedRenderEdgeSpecifier<E: GraphTraits> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits> {
+pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     new_nodes: RefCell<HashMap<Uid, NewNode<T, E>>>,
     update_nodes: RefCell<HashMap<Uid, UpdateNode<T, E>>>,
     delete_nodes: RefCell<HashSet<Uid>>,
@@ -29,7 +29,7 @@ pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits> {
     entry_edges: RefCell<HashSet<EdgeDescriptor<E>>>,
     // Bool represents whether the node is_new
     temp_edges: RefCell<HashSet<(EdgeDescriptor<E>, bool)>>,
-    remove_edge_finders: RefCell<HashSet<EdgeFinder<E>>>,
+    remove_edge_finders: RefCell<HashSet<EdgeFinder<T, E, A>>>,
     removed_render_edges: RefCell<HashSet<EdgeDescriptor<E>>>,
     // Stored as NewNodes to facilitate the render path finding algorithm, but these nodes are actually existent.
     // The new edges represent all of the existing edges except for any that have been removed
@@ -40,13 +40,15 @@ pub struct BuildBlueprint<T: GraphTraits, E: GraphTraits> {
     errors: RefCell<Vec<GraphError>>,
 }
 
-impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> Default for BuildBlueprint<T, E> {
+impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> Default
+    for BuildBlueprint<T, E, A>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
+impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> BuildBlueprint<T, E, A> {
     pub fn new() -> Self {
         Self {
             new_nodes: RefCell::new(HashMap::new()),
@@ -86,7 +88,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    pub fn start_with_new_node(&'b self) -> BlueNew<'a, T, E> {
+    pub fn start_with_new_node(&'b self) -> BlueNew<'a, T, E, A> {
         let new_node = NewNode::new();
         self.add_node(new_node.clone());
         BlueNew {
@@ -110,7 +112,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    pub fn start_with_update_node(&'b self, id: Uid) -> BlueUpdate<'b, T, E> {
+    pub fn start_with_update_node(&'b self, id: Uid) -> BlueUpdate<'b, T, E, A> {
         let update_node = UpdateNode::new(id);
         self.update_node(update_node.clone());
         BlueUpdate {
@@ -124,7 +126,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
     }
 
     // Edge should be given from the perspective of the potentially displaced node
-    fn find_and_catalog_displaced_nodes<A: GraphTraits>(
+    fn find_and_catalog_displaced_nodes(
         &self,
         graph: &ViewGraph<T, E, A>,
         edge_to_check: EdgeDescriptor<E>,
@@ -176,7 +178,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn finalize_delete_nodes<A: GraphTraits>(&self, graph: &ViewGraph<T, E, A>) {
+    fn finalize_delete_nodes(&self, graph: &ViewGraph<T, E, A>) {
         for node_id in self.delete_nodes.borrow().iter() {
             // Since entry edges should represent everywhere a new node is being connected to an existing node,
             // we should be able to check the entry edges for anywhere the a new node was referencing a deleted node, and remove those edges
@@ -194,7 +196,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                 let mut new_nodes_mut = self.new_nodes.borrow_mut();
                 let new_node = new_nodes_mut.get_mut(&found_edge.target).unwrap();
                 let found_actual_edges =
-                    new_node.find_edges(&EdgeFinder::new().target(*node_id).match_all());
+                    new_node.find_edges(&EdgeFinder::<T, E, A>::new().target(*node_id).match_all());
                 for found_actual_edge in found_actual_edges {
                     new_node.add_edges.remove(&found_actual_edge);
                 }
@@ -236,7 +238,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn finalize_removed_edges<A: GraphTraits>(&self, graph: &ViewGraph<T, E, A>) {
+    fn finalize_removed_edges(&self, graph: &ViewGraph<T, E, A>) {
         for edge_finder in self.remove_edge_finders.borrow().iter() {
             // Find the edge(s) in the graph
             // We are manually setting the host in the BlueUpdate method.
@@ -345,10 +347,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn find_potential_entries_for_displaced_nodes<A: GraphTraits>(
-        &self,
-        graph: &ViewGraph<T, E, A>,
-    ) {
+    fn find_potential_entries_for_displaced_nodes(&self, graph: &ViewGraph<T, E, A>) {
         for (id, displaced_node) in self.displaced_nodes.borrow().iter() {
             displaced_node.add_edges.iter().for_each(|edge| {
                 if graph.nodes.get(&edge.target).is_some()
@@ -363,17 +362,12 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    fn set_render_edges<A: GraphTraits>(
+    fn set_render_edges(
         &self,
-        valid_render_edge_finders: Vector<EdgeFinder<E>>,
+        valid_render_edge_finders: Vector<EdgeFinder<T, E, A>>,
         entry_point_temp_id: Option<TempId>,
         graph: &ViewGraph<T, E, A>,
     ) {
-        let flipped_valid_edge_finders: Vector<EdgeFinder<E>> = valid_render_edge_finders
-            .iter()
-            .map(|finder| finder.invert())
-            .collect();
-
         let combined_entry_edges: HashSet<EdgeDescriptor<E>> = self
             .entry_edges
             .borrow()
@@ -388,17 +382,20 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
             .collect();
 
         let mut ranked_connection_possibilities: HashMap<u64, HashSet<EdgeDescriptor<E>>> =
-            combined_entry_edges
-                .iter()
-                .map(|edge| {
-                    let order_value = flipped_valid_edge_finders
+            combined_entry_edges.iter().fold(
+                HashMap::<u64, HashSet<EdgeDescriptor<E>>>::new(),
+                |mut acc, edge| {
+                    let order_value = valid_render_edge_finders
                         .iter()
                         .position(|finder| finder.matches(edge))
                         .unwrap_or(usize::MAX);
 
-                    (order_value as u64, hashset!(edge.clone()))
-                })
-                .collect();
+                    acc.entry(order_value as u64)
+                        .or_default()
+                        .insert(edge.clone());
+                    acc
+                },
+            );
 
         let mut combined_uncertain_render_nodes = self.new_nodes.borrow().clone();
         combined_uncertain_render_nodes.extend(self.displaced_nodes.borrow().clone());
@@ -427,7 +424,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                 .get(&starting_id)
                 .cloned()
                 .unwrap();
-            if node.get_render_edge().is_some() {
+            if node.get_render_edge::<A>().is_some() {
                 self.errors.borrow_mut().push(GraphError::Blueprint(format!(
                     "set_render_edges: entry_point cannot have a render edge\nNode Id: {:?}",
                     node.id
@@ -520,7 +517,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
                 .cloned()
                 .unwrap();
 
-            if let Some(existing_render_edge) = target_node.get_render_edge() {
+            if let Some(existing_render_edge) = target_node.get_render_edge::<A>() {
                 if all_connected_nodes.contains(&existing_render_edge.target) {
                     newly_connected_nodes.insert(target_node.clone());
                     all_connected_nodes.insert(target_node.id);
@@ -610,7 +607,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         }
     }
 
-    pub fn finalize<A: GraphTraits>(
+    pub fn finalize(
         self,
         graph: &ViewGraph<T, E, A>,
         // Will be chosen with preference to the order they are specified
@@ -618,7 +615,7 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
         render_edge_types: Option<Vector<AllowedRenderEdgeSpecifier<E>>>,
         entry_point_temp_id: Option<TempId>,
     ) -> Result<FinalizedBlueprint<T, E>, Vec<GraphError>> {
-        let valid_render_edge_finders: Vector<EdgeFinder<E>> =
+        let valid_render_edge_finders: Vector<EdgeFinder<T, E, A>> =
             if let Some(render_edge_types) = &render_edge_types {
                 render_edge_types
                     .iter()
@@ -687,12 +684,12 @@ impl<'a, 'b: 'a, T: GraphTraits, E: GraphTraits> BuildBlueprint<T, E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct BlueNew<'a, T: GraphTraits, E: GraphTraits> {
+pub struct BlueNew<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub node: NewNode<T, E>,
-    pub blueprint: &'a BuildBlueprint<T, E>,
+    pub blueprint: &'a BuildBlueprint<T, E, A>,
 }
 
-impl<'a, T: GraphTraits, E: GraphTraits> BlueNew<'a, T, E> {
+impl<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> BlueNew<'a, T, E, A> {
     pub fn set_data(&self, data: T) -> Self {
         let new_node = NewNode {
             data,
@@ -712,6 +709,13 @@ impl<'a, T: GraphTraits, E: GraphTraits> BlueNew<'a, T, E> {
             ..self.node.clone()
         };
         self.blueprint.add_node(new_node.clone());
+
+        if self.node.temp_id.is_some() {
+            self.blueprint
+                .temp_id_map
+                .borrow_mut()
+                .insert(self.node.temp_id.unwrap(), id);
+        }
         Self {
             node: new_node,
             ..self.clone()
@@ -748,12 +752,12 @@ impl<'a, T: GraphTraits, E: GraphTraits> BlueNew<'a, T, E> {
 }
 
 #[derive(Clone)]
-pub struct BlueUpdate<'a, T: GraphTraits, E: GraphTraits> {
+pub struct BlueUpdate<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub node: UpdateNode<T, E>,
-    pub blueprint: &'a BuildBlueprint<T, E>,
+    pub blueprint: &'a BuildBlueprint<T, E, A>,
 }
 
-impl<'a, T: GraphTraits, E: GraphTraits> BlueUpdate<'a, T, E> {
+impl<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> BlueUpdate<'a, T, E, A> {
     pub fn update_data(&self, data: T) -> Self {
         let new_node = UpdateNode {
             replacement_data: Some(data),
@@ -794,7 +798,7 @@ impl<'a, T: GraphTraits, E: GraphTraits> BlueUpdate<'a, T, E> {
         }
     }
 
-    pub fn remove_edge(&self, edge_finder: EdgeFinder<E>) -> Self {
+    pub fn remove_edge(&self, edge_finder: EdgeFinder<T, E, A>) -> Self {
         let host_hashset = hashset!(self.node.id);
         let mut edge_finder = edge_finder;
 
@@ -812,32 +816,34 @@ impl<'a, T: GraphTraits, E: GraphTraits> BlueUpdate<'a, T, E> {
 pub trait GetIsNew {
     fn get_is_new(&self) -> bool;
 }
-impl<'b, T: GraphTraits, E: GraphTraits> GetIsNew for BlueNew<'b, T, E> {
+impl<'b, T: GraphTraits, E: GraphTraits, A: GraphTraits> GetIsNew for BlueNew<'b, T, E, A> {
     fn get_is_new(&self) -> bool {
         true
     }
 }
-impl<'b, T: GraphTraits, E: GraphTraits> GetIsNew for BlueUpdate<'b, T, E> {
+impl<'b, T: GraphTraits, E: GraphTraits, A: GraphTraits> GetIsNew for BlueUpdate<'b, T, E, A> {
     fn get_is_new(&self) -> bool {
         false
     }
 }
-pub trait AddBlueprintEdges<'a, T: GraphTraits, E: GraphTraits> {
+pub trait AddBlueprintEdges<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     fn add_edge_existing<F>(&self, direction: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
     where
-        F: FnOnce(BlueUpdate<'a, T, E>) -> BlueUpdate<'a, T, E>;
+        F: FnOnce(BlueUpdate<'a, T, E, A>) -> BlueUpdate<'a, T, E, A>;
     fn add_edge_new<F>(&self, direction: EdgeDir, edge_type: E, f: F) -> Self
     where
-        F: FnOnce(BlueNew<'a, T, E>) -> BlueNew<'a, T, E>;
+        F: FnOnce(BlueNew<'a, T, E, A>) -> BlueNew<'a, T, E, A>;
     fn add_edge_temp(&self, direction: EdgeDir, edge_type: E, temp_id: Uid) -> Self;
 }
 
 macro_rules! implement_add_blueprint_edges {
     ($type:ty) => {
-        impl<'a, T: GraphTraits, E: GraphTraits> AddBlueprintEdges<'a, T, E> for $type {
+        impl<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> AddBlueprintEdges<'a, T, E, A>
+            for $type
+        {
             fn add_edge_new<F>(&self, dir: EdgeDir, edge_type: E, f: F) -> Self
             where
-                F: FnOnce(BlueNew<'a, T, E>) -> BlueNew<'a, T, E>,
+                F: FnOnce(BlueNew<'a, T, E, A>) -> BlueNew<'a, T, E, A>,
             {
                 let edge_node = f(BlueNew {
                     node: NewNode::new(),
@@ -870,7 +876,7 @@ macro_rules! implement_add_blueprint_edges {
 
             fn add_edge_existing<F>(&self, dir: EdgeDir, edge_type: E, id: Uid, f: F) -> Self
             where
-                F: FnOnce(BlueUpdate<'a, T, E>) -> BlueUpdate<'a, T, E>,
+                F: FnOnce(BlueUpdate<'a, T, E, A>) -> BlueUpdate<'a, T, E, A>,
             {
                 let edge_node = f(BlueUpdate {
                     node: UpdateNode::new(id),
@@ -915,8 +921,8 @@ macro_rules! implement_add_blueprint_edges {
     };
 }
 
-implement_add_blueprint_edges!(BlueNew<'a, T, E>);
-implement_add_blueprint_edges!(BlueUpdate<'a, T, E>);
+implement_add_blueprint_edges!(BlueNew<'a, T, E, A>);
+implement_add_blueprint_edges!(BlueUpdate<'a, T, E, A>);
 
 #[cfg(test)]
 mod tests {
@@ -926,10 +932,11 @@ mod tests {
 
     use crate::prelude::reactive_node::build_reactive_node::BuildReactiveNode;
     use crate::prelude::reactive_node::last_action::ActionData;
+    use crate::prelude::utils::log_finalize_results;
     use crate::prelude::*;
     use crate::{graph::view_graph::ViewGraph, prelude::reactive_node::last_action::LastAction};
 
-    use super::{AddBlueprintEdges, BuildBlueprint, FinalizedBlueprint};
+    use super::{AddBlueprintEdges, BuildBlueprint};
 
     /// (999) -> (998) -> (999)
     fn manual_setup_graph() -> ViewGraph<String, String, String> {
@@ -1021,46 +1028,10 @@ mod tests {
         graph
     }
 
-    fn log_finalize_results(build_blueprint: &FinalizedBlueprint<String, String>) {
-        for node in build_blueprint.new_nodes.values() {
-            println!("+ New Node {:?}", node.id);
-            if node.temp_id.is_some() {
-                println!("  + Temp ID: {:?}", node.temp_id);
-            }
-            if node.data != String::default() {
-                println!("  + Data: {:?}", node.data);
-            }
-            for edge in node.add_edges.iter() {
-                println!("  + Edge: {:?}", edge);
-            }
-        }
-        for node in build_blueprint.update_nodes.values() {
-            println!("~ Update Node {:?}", node.id);
-            if node.replacement_data.is_some() {
-                println!("  ~ Data: {:?}", node.replacement_data);
-            }
-            for edge in node.add_edges.iter() {
-                println!("  + Edge: {:?}", edge);
-            }
-            for edge in node.remove_edges.iter() {
-                println!("  - Edge: {:?}", edge);
-            }
-            for label in node.add_labels.iter() {
-                println!("  + Label: {:?}", label);
-            }
-            for label in node.remove_labels.iter() {
-                println!("  - Label: {:?}", label);
-            }
-        }
-        for node in build_blueprint.delete_nodes.iter() {
-            println!("- Delete Node {:?}", node);
-        }
-    }
-
     #[test]
     fn should_generate_correct_graph_from_only_new_nodes() {
         let mut graph = ViewGraph::new();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_new_node()
@@ -1074,9 +1045,7 @@ mod tests {
                     })
             });
 
-        let build_blueprint = build_blueprint
-            .finalize::<String>(&graph, None, Some(1))
-            .unwrap();
+        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1)).unwrap();
 
         let action_data = ActionData::new("update".to_string());
 
@@ -1142,7 +1111,7 @@ mod tests {
     #[test]
     fn should_fail_if_new_node_cannot_be_connected() {
         let graph = ViewGraph::new();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_new_node()
@@ -1157,7 +1126,7 @@ mod tests {
             .set_id(3)
             .set_temp_id(2);
 
-        let build_blueprint = build_blueprint.finalize::<String>(&graph, None, Some(1));
+        let build_blueprint = build_blueprint.finalize(&graph, None, Some(1));
 
         assert!(build_blueprint.is_err());
     }
@@ -1165,7 +1134,7 @@ mod tests {
     #[test]
     fn should_correctly_attach_new_node_subgraph_to_existing_graph() {
         let mut graph = manual_setup_graph();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_new_node()
@@ -1207,7 +1176,7 @@ mod tests {
     #[test]
     fn should_delete_existing_nodes_which_are_no_longer_renderable() {
         let graph = manual_setup_graph();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_update_node(999)
@@ -1221,7 +1190,7 @@ mod tests {
     #[test]
     fn should_reconnect_existing_nodes_which_were_disconnected_if_possible() {
         let mut graph = manual_setup_graph();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_new_node()
@@ -1258,7 +1227,7 @@ mod tests {
     #[test]
     fn should_reconnect_child_existing_nodes_which_were_disconnected_using_new_node_if_possible() {
         let mut graph = manual_setup_graph();
-        let build_blueprint = BuildBlueprint::<String, String>::new();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
 
         build_blueprint
             .start_with_new_node()
@@ -1302,5 +1271,40 @@ mod tests {
                     .render_info(Some(EdgeDir::Recv))
             )
             .is_some());
+    }
+
+    #[test]
+    fn should_be_able_to_execute_a_blueprint_with_multiple_starting_points() {
+        let graph = manual_setup_graph();
+        let build_blueprint = BuildBlueprint::<String, String, String>::new();
+
+        build_blueprint.start_with_update_node(999).add_edge_new(
+            EdgeDir::Emit,
+            "edge_type".into(),
+            |blue_new| {
+                blue_new
+                    .set_id(2)
+                    .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                        blue_new.set_id(3)
+                    })
+            },
+        );
+
+        build_blueprint.start_with_update_node(998).add_edge_new(
+            EdgeDir::Emit,
+            "edge_type".into(),
+            |blue_new| {
+                blue_new
+                    .set_id(3)
+                    .add_edge_new(EdgeDir::Emit, "edge_type".into(), |blue_new| {
+                        blue_new.set_id(3)
+                    })
+            },
+        );
+
+        let build_blueprint = build_blueprint.finalize(&graph, None, None);
+        assert!(build_blueprint.is_ok());
+        log_finalize_results(&build_blueprint.unwrap());
+        // panic!();
     }
 }

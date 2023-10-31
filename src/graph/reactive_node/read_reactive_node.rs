@@ -1,20 +1,15 @@
+use std::fmt::Debug;
+
 use im::{HashSet, Vector};
 // use leptos_reactive::{ReadSignal, SignalGetUntracked};
 use leptos::*;
 
 use crate::prelude::*;
 
-use super::{
-    super::{
-        common::{EdgeDescriptor, Uid},
-        GraphTraits,
-    },
-    last_action::LastAction,
-    utils::search_map_for_edge,
-};
+use super::{last_action::LastAction, utils::search_map_for_edge};
 use im::hashmap::HashMap;
 
-#[derive(Clone, PartialEq, Debug, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ReadReactiveNode<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub id: Uid,
     pub data: ReadSignal<T>,
@@ -24,10 +19,23 @@ pub struct ReadReactiveNode<T: GraphTraits, E: GraphTraits, A: GraphTraits> {
     pub last_action: ReadSignal<LastAction<T, E, A>>,
 }
 
+impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> Debug for ReadReactiveNode<T, E, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadReactiveNode")
+            .field("id", &self.id)
+            .field("data", &self.data.get_untracked())
+            .field("labels", &self.labels.get_untracked())
+            .field("incoming_edges", &self.incoming_edges.get_untracked())
+            .field("outgoing_edges", &self.outgoing_edges.get_untracked())
+            .field("last_action", &self.last_action.get_untracked())
+            .finish()
+    }
+}
+
 impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> ReadReactiveNode<T, E, A> {
     pub fn search_for_edge(
         &self,
-        edge_finder: &EdgeFinder<E>,
+        edge_finder: &EdgeFinder<T, E, A>,
     ) -> Option<HashSet<EdgeDescriptor<E>>> {
         if edge_finder.host.is_some() && !edge_finder.host.as_ref().unwrap().contains(&self.id) {
             return None;

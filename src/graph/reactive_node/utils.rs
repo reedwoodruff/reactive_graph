@@ -2,8 +2,8 @@ use im::{HashMap, HashSet};
 
 use crate::prelude::{EdgeDescriptor, EdgeFinder, GraphTraits};
 
-pub fn search_map_for_edge<E: GraphTraits, I>(
-    edge_finder: &EdgeFinder<E>,
+pub fn search_map_for_edge<T: GraphTraits, E: GraphTraits, A: GraphTraits, I>(
+    edge_finder: &EdgeFinder<T, E, A>,
     map: &HashMap<E, I>,
 ) -> HashSet<EdgeDescriptor<E>>
 where
@@ -52,6 +52,16 @@ where
                 && edge_finder.render_info.as_ref().unwrap() != &edge.render_info
             {
                 continue;
+            }
+            if edge_finder.gate_closure.is_some() {
+                let (gate_closure, get_node) = edge_finder.gate_closure.as_ref().unwrap();
+                if let Ok(node) = get_node(edge.target) {
+                    if !gate_closure(&node) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
             }
             found_edges.insert(edge.clone());
         }

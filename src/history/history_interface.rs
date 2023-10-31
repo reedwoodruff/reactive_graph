@@ -32,7 +32,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> HistoryInterface<T, E, A> {
                 Some(undo_item.action_data),
             )
             .unwrap();
-        } 
+        }
     }
     pub fn redo(&self, redo_action: A) {
         let redo_item = self.history.redo();
@@ -43,7 +43,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> HistoryInterface<T, E, A> {
                 Some(redo_item.action_data),
             )
             .unwrap();
-        } 
+        }
     }
 
     pub fn push(&self, item: HistoryItem<T, E, A>) {

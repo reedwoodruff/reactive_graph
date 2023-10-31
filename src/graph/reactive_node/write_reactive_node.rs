@@ -8,13 +8,7 @@ use crate::prelude::finalized_update_node::FinalizedUpdateNode;
 use crate::prelude::*;
 
 use super::last_action::ActionData;
-use super::{
-    super::{
-        common::{EdgeDescriptor, Uid},
-        GraphTraits,
-    },
-    last_action::LastAction,
-};
+use super::last_action::LastAction;
 use im::hashmap::HashMap;
 
 #[derive(Clone, PartialEq, Debug, Eq)]
@@ -130,7 +124,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> WriteReactiveNode<T, E, A> 
         });
     }
 
-    fn set_last_action(&mut self, action: LastAction<T, E, A>) {
-        self.last_action.set(action);
-    }
+    // fn set_last_action(&mut self, action: LastAction<T, E, A>) {
+    //     self.last_action.set(action);
+    // }
 }

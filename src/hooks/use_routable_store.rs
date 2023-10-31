@@ -10,12 +10,12 @@ use crate::{
         history_store::{reactive_node::last_action::ActionData, FinalizedBlueprint, HistoryStore},
     },
     prelude::{
-        new_node::TempId, utils::log_finalize_results, view_graph::ViewGraph,
-        AllowedRenderEdgeSpecifier, BuildBlueprint, GraphError, GraphTraits, Uid,
+        new_node::TempId, view_graph::ViewGraph, AllowedRenderEdgeSpecifier, BuildBlueprint,
+        GraphError, GraphTraits, Uid,
     },
 };
 
-use super::UseRoutableReturn;
+use super::{ProcessBlueprintReturn, UseRoutableReturn};
 
 #[derive(Clone, Debug)]
 pub struct GraphLock {
@@ -61,7 +61,7 @@ pub fn use_routable_store<T: GraphTraits, E: GraphTraits, A: GraphTraits>(
               primary_action_data: A,
               secondary_action_data: Option<Rc<A>>|
               -> Result<(), GraphError> {
-            log_finalize_results(&finalized_blueprint);
+            // log_finalize_results(&finalized_blueprint);
             graph_lock_clone.lock();
             let mut action_data = ActionData::<A>::new(primary_action_data);
             if let Some(secondary_action_data) = secondary_action_data {
@@ -90,7 +90,7 @@ pub fn use_routable_store<T: GraphTraits, E: GraphTraits, A: GraphTraits>(
     let history_interface_clone1 = history_interface.clone();
 
     let underlying_process_blueprint = Rc::new(
-        move |blueprint: BuildBlueprint<T, E>,
+        move |blueprint: BuildBlueprint<T, E, A>,
               action_data: A,
               entry_point_temp_id: Option<TempId>|
               -> Result<(), GraphError> {
@@ -111,29 +111,33 @@ pub fn use_routable_store<T: GraphTraits, E: GraphTraits, A: GraphTraits>(
     let underlying_process_blueprint_clone = underlying_process_blueprint.clone();
 
     let initiate_graph = Rc::new(
-        move |blueprint: BuildBlueprint<T, E>,
+        move |blueprint: BuildBlueprint<T, E, A>,
               action_data: A,
               entry_point_temp_id: TempId|
-              -> Result<Uid, GraphError> {
-            let final_id = blueprint
-                .temp_id_map
-                .borrow()
-                .get(&entry_point_temp_id)
-                .copied();
+              -> ProcessBlueprintReturn {
+            // let final_id = blueprint
+            //     .temp_id_map
+            //     .borrow()
+            //     .get(&entry_point_temp_id)
+            //     .copied();
+            let temp_id_map = blueprint.temp_id_map.borrow().clone();
             underlying_process_blueprint_clone(blueprint, action_data, Some(entry_point_temp_id))?;
-            if let Some(final_id) = final_id {
-                Ok(final_id)
-            } else {
-                Err(GraphError::Blueprint(format!(
-                    "Use Routable: Failed to find given temp entry point, ID: {:?}",
-                    entry_point_temp_id
-                )))?
-            }
+            // if let Some(final_id) = final_id {
+            //     Ok(final_id)
+            // } else {
+            //     Err(GraphError::Blueprint(format!(
+            //         "Use Routable: Failed to find given temp entry point, ID: {:?}",
+            //         entry_point_temp_id
+            //     )))?
+            // }
+            Ok(temp_id_map)
         },
     );
     let process_blueprint = Rc::new(
-        move |blueprint: BuildBlueprint<T, E>, action_data: A| -> Result<(), GraphError> {
-            underlying_process_blueprint(blueprint, action_data, None)
+        move |blueprint: BuildBlueprint<T, E, A>, action_data: A| -> ProcessBlueprintReturn {
+            let temp_id_map = blueprint.temp_id_map.borrow().clone();
+            underlying_process_blueprint(blueprint, action_data, None)?;
+            Ok(temp_id_map)
         },
     );
 

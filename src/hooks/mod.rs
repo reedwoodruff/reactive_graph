@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod tests;
 mod use_routable;
 mod use_routable_store;
 
