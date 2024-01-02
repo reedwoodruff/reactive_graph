@@ -64,7 +64,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> TraversalDescriptor<T, E, A
 
     pub fn execute(&self) -> Option<TraversalResult<T, E, A>> {
         let get_node = self.get_node_closure.clone();
-        let root_trav_node = TraversalNode::new((get_node)(self.start_node).unwrap(), 0, 0);
+        let root_trav_node = TraversalNode::new((get_node)(&self.start_node).unwrap(), 0, 0);
         let visited_all: HashSet<Uid> = HashSet::new();
 
         let initial_result_vector =

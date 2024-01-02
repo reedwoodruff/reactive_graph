@@ -18,6 +18,9 @@ features = [
     "macro-diagnostics", # Enable better diagnostics for compile-time UUIDs
 ]
 
+# [lib]
+# crate-type = ["cdylib"]
+
 # [profile.release]
 # opt-level = 'z'
 # lto = true

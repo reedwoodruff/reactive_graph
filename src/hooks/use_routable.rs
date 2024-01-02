@@ -10,7 +10,7 @@ use im::HashMap;
 use leptos::*;
 
 pub type GetNodeClosure<T, E, A> =
-    Rc<dyn Fn(Uid) -> Result<Rc<ReadReactiveNode<T, E, A>>, GraphError>>;
+    Rc<dyn Fn(&Uid) -> Result<Rc<ReadReactiveNode<T, E, A>>, GraphError>>;
 
 pub type ProcessBlueprintReturn = Result<HashMap<TempId, Uid>, GraphError>;
 #[derive(Clone)]
@@ -33,7 +33,7 @@ impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> core::fmt::Debug
     }
 }
 impl<T: GraphTraits, E: GraphTraits, A: GraphTraits> UseRoutableReturn<T, E, A> {
-    pub fn get_node(&self, id: Uid) -> Result<Rc<ReadReactiveNode<T, E, A>>, GraphError> {
+    pub fn get_node(&self, id: &Uid) -> Result<Rc<ReadReactiveNode<T, E, A>>, GraphError> {
         (self.get_node_closure)(id)
     }
     pub fn process_blueprint(

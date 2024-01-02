@@ -134,7 +134,7 @@ pub(crate) fn traverse_step_item<'a, T: GraphTraits, E: GraphTraits, A: GraphTra
         return None;
     }
 
-    // Checking for the case that this node should be added regardless of further step operations
+    // Checking for the case that this node should be added regardless of further intra-step operations
     // That would be the case if
     // - The step is satisfied on this node and
     // 1. the count is inclusive
@@ -173,7 +173,7 @@ pub(crate) fn traverse_step_item<'a, T: GraphTraits, E: GraphTraits, A: GraphTra
 
             for edge in matching_edges.iter() {
                 let new_trav_node = TraversalNode::new(
-                    (get_node)(edge.target).unwrap(),
+                    (get_node)(&edge.target).unwrap(),
                     step_index + 1,
                     traversal_index + 1,
                 )

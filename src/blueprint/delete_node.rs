@@ -33,19 +33,6 @@ impl<T: GraphTraits, E: GraphTraits> DeleteNode<T, E> {
     pub fn from_read_reactive_node<A: GraphTraits>(
         reactive_node: &ReadReactiveNode<T, E, A>,
     ) -> Self {
-        log!(
-            "reactive_node outgoing_edges: {:?}",
-            reactive_node.outgoing_edges.get_untracked()
-        );
-        log!(
-            "reactive_node incoming_edges: {:?}",
-            reactive_node.outgoing_edges.get_untracked()
-        );
-        log!(
-            "reactive_node to_hashset: {:?}",
-            reactive_node.convert_all_edges_to_hashset()
-        );
-
         Self {
             id: reactive_node.id,
             remove_edges: reactive_node.convert_all_edges_to_hashset(),

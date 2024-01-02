@@ -141,7 +141,7 @@ pub fn use_routable_store<T: GraphTraits, E: GraphTraits, A: GraphTraits>(
         },
     );
 
-    let get_node = Rc::new(move |id: Uid| {
+    let get_node = Rc::new(move |id: &Uid| {
         let graph = view_graph.borrow();
         let node = graph
             .nodes

@@ -55,7 +55,7 @@ where
             }
             if edge_finder.gate_closure.is_some() {
                 let (gate_closure, get_node) = edge_finder.gate_closure.as_ref().unwrap();
-                if let Ok(node) = get_node(edge.target) {
+                if let Ok(node) = get_node(&edge.target) {
                     if !gate_closure(&node) {
                         continue;
                     }

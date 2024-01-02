@@ -235,7 +235,7 @@ impl<'a, T: GraphTraits, E: GraphTraits, A: GraphTraits> EdgeFinder<T, E, A> {
             self.gate_closure
                 .as_ref()
                 .map_or(true, |(gate_closure, get_node)| {
-                    if let Ok(node) = get_node(edge.target) {
+                    if let Ok(node) = get_node(&edge.target) {
                         gate_closure(&node)
                     } else {
                         false

@@ -3,12 +3,7 @@ use std::rc::Rc;
 use im::Vector;
 use leptos::SignalGetUntracked;
 
-use crate::{
-    prelude::*,
-    traversal::{
-        traversal_step::{TraversalCount},
-    },
-};
+use crate::{prelude::*, traversal::traversal_step::TraversalCount};
 
 use super::{use_routable, use_routable_store, UseRoutableReturn};
 
@@ -83,23 +78,23 @@ fn add_branch_to_graph(routable: Rc<UseRoutableReturn<String, String, String>>) 
 #[test]
 fn should_setup_context() {
     let routable = setup_context();
-    assert!(routable.get_node(1).is_err());
+    assert!(routable.get_node(&1).is_err());
 }
 #[test]
 fn should_allow_creating_new_graph() {
     let routable = set_up_basic_graph();
-    assert!(routable.get_node(1).is_ok());
+    assert!(routable.get_node(&1).is_ok());
 }
 
 #[test]
 fn should_allow_manipulating_existing_graph() {
     let routable = set_up_basic_graph();
     add_branch_to_graph(routable.clone());
-    assert!(routable.get_node(6).is_ok());
+    assert!(routable.get_node(&6).is_ok());
 
     assert_eq!(
         routable
-            .get_node(3)
+            .get_node(&3)
             .unwrap()
             .outgoing_edges
             .get_untracked()
@@ -108,7 +103,7 @@ fn should_allow_manipulating_existing_graph() {
             .len(),
         2
     );
-    assert!(routable.get_node(7).is_ok());
+    assert!(routable.get_node(&7).is_ok());
 }
 
 #[test]
@@ -338,7 +333,8 @@ fn should_return_correct_multi_step_branching_traversal_results() {
         .iter()
         .fold(None, |acc, item| {
             item.endpoints
-                .iter().find(|endpoint| endpoint.node.id == 11)
+                .iter()
+                .find(|endpoint| endpoint.node.id == 11)
                 .or(acc)
         })
         .unwrap();
@@ -349,7 +345,8 @@ fn should_return_correct_multi_step_branching_traversal_results() {
         .iter()
         .fold(None, |acc, item| {
             item.endpoints
-                .iter().find(|endpoint| endpoint.node.id == 9)
+                .iter()
+                .find(|endpoint| endpoint.node.id == 9)
                 .or(acc)
         })
         .unwrap();
